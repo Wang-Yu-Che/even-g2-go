@@ -9,12 +9,13 @@ import (
 
 func TestAudioNotificationsAreCopiedAndPublished(t *testing.T) {
 	client := testClient(&recordingTransport{})
+	frames := client.SubscribeAudio(t.Context())
 	notifications := make(chan []byte, 1)
 	data := []byte{1, 2, 3}
 	client.AttachAudioNotifications(t.Context(), ble.Right, notifications)
 	notifications <- data
 	select {
-	case frame := <-client.AudioFrames():
+	case frame := <-frames:
 		data[0] = 9
 		if frame.Arm != ble.Right || frame.Data[0] != 1 {
 			t.Fatalf("frame = %#v", frame)

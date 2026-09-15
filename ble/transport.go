@@ -16,7 +16,7 @@ var (
 // Transport separates the G2 protocol from a platform BLE implementation.
 type Transport interface {
 	Scan(ctx context.Context, report func(ScanResult)) error
-	Connect(ctx context.Context, arm Arm) error
+	Connect(ctx context.Context, arm Arm, device ScanResult) error
 	Write(ctx context.Context, arm Arm, data []byte) error
 	Subscribe(ctx context.Context, arm Arm) (<-chan []byte, error)
 	Close() error

@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"strings"
-	"sync"
 
 	"tinygo.org/x/bluetooth"
 )
@@ -64,7 +63,6 @@ func (s *Scanner) Scan(ctx context.Context, report func(ScanResult)) error {
 		return err
 	}
 
-	classifier := armClassifier{}
 	scanDone := make(chan struct{})
 	defer close(scanDone)
 
@@ -89,7 +87,7 @@ func (s *Scanner) Scan(ctx context.Context, report func(ScanResult)) error {
 			return
 		}
 
-		arm, ok := classifier.classify(name)
+		arm, ok := classifyArm(name)
 		if !ok {
 			return
 		}
@@ -106,29 +104,12 @@ func (s *Scanner) Scan(ctx context.Context, report func(ScanResult)) error {
 	return nil
 }
 
-type armClassifier struct {
-	mu        sync.Mutex
-	leftUsed  bool
-	rightUsed bool
-}
-
-func (c *armClassifier) classify(name string) (Arm, bool) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-
+func classifyArm(name string) (Arm, bool) {
 	upper := strings.ToUpper(name)
 	switch {
 	case strings.Contains(upper, "_L_") || strings.Contains(upper, "LEFT"):
-		c.leftUsed = true
 		return Left, true
 	case strings.Contains(upper, "_R_") || strings.Contains(upper, "RIGHT"):
-		c.rightUsed = true
-		return Right, true
-	case !c.leftUsed:
-		c.leftUsed = true
-		return Left, true
-	case !c.rightUsed:
-		c.rightUsed = true
 		return Right, true
 	default:
 		return Left, false

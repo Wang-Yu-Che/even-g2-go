@@ -8,8 +8,9 @@ import (
 )
 
 func TestConnectWithTransportCompletesFullFlow(t *testing.T) {
-	transport := &recordingTransport{scanResults: []ble.ScanResult{{Arm: ble.Left}, {Arm: ble.Right}}}
-	client, err := connectWithTransport(t.Context(), transport, ConnectOptions{})
+	transport := &recordingTransport{}
+	device := Device{ID: "g2", Left: ble.ScanResult{Arm: ble.Left}, Right: ble.ScanResult{Arm: ble.Right}}
+	client, err := connectWithTransport(t.Context(), transport, device, ConnectOptions{})
 	if err != nil {
 		t.Fatalf("connectWithTransport() error = %v", err)
 	}
@@ -34,9 +35,10 @@ func TestClosedNotificationSignalsDisconnect(t *testing.T) {
 	}
 }
 
-func TestDiscoverBothReportsMissingArm(t *testing.T) {
-	transport := &recordingTransport{scanResults: []ble.ScanResult{{Arm: ble.Left}}}
-	if err := discoverBoth(t.Context(), transport, 1); err != ble.ErrRightArmNotFound {
-		t.Fatalf("error = %v, want ErrRightArmNotFound", err)
+func TestScanDevicesRequiresCompletePair(t *testing.T) {
+	transport := &recordingTransport{scanResults: []ble.ScanResult{{Arm: ble.Left, Name: "Even G2_L_1234"}}}
+	devices, err := scanDevices(t.Context(), transport, ScanOptions{Timeout: time.Nanosecond})
+	if err != nil || len(devices) != 0 {
+		t.Fatalf("devices = %#v, error = %v", devices, err)
 	}
 }

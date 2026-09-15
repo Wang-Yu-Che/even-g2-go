@@ -2,9 +2,7 @@ package g2
 
 import (
 	"context"
-	"errors"
 	"io"
-	"sync"
 	"time"
 
 	"github.com/Wang-Yu-Che/even-g2-go/ble"
@@ -22,7 +20,20 @@ type ConnectOptions struct {
 // Connect scans, connects both arms, subscribes to notifications, and authenticates.
 func Connect(ctx context.Context, options ConnectOptions) (*Client, error) {
 	transport := ble.NewTransport()
-	client, err := connectWithTransport(ctx, transport, options)
+	devices, err := scanDevices(ctx, transport, ScanOptions{Timeout: options.ScanTimeout})
+	if err != nil {
+		_ = transport.Close()
+		return nil, err
+	}
+	if len(devices) == 0 {
+		_ = transport.Close()
+		return nil, ErrNoDevice
+	}
+	if len(devices) > 1 {
+		_ = transport.Close()
+		return nil, ErrMultipleDevices
+	}
+	client, err := connectWithTransport(ctx, transport, devices[0], options)
 	if err != nil {
 		_ = transport.Close()
 		return nil, err
@@ -30,19 +41,28 @@ func Connect(ctx context.Context, options ConnectOptions) (*Client, error) {
 	return client, nil
 }
 
-func connectWithTransport(ctx context.Context, transport ble.Transport, options ConnectOptions) (*Client, error) {
-	if options.ScanTimeout <= 0 {
-		options.ScanTimeout = 20 * time.Second
-	}
-	if err := discoverBoth(ctx, transport, options.ScanTimeout); err != nil {
+// ConnectDevice connects an explicitly selected G2 pair.
+func ConnectDevice(ctx context.Context, device Device, options ConnectOptions) (*Client, error) {
+	transport := ble.NewTransport()
+	client, err := connectWithTransport(ctx, transport, device, options)
+	if err != nil {
+		_ = transport.Close()
 		return nil, err
 	}
-	for _, arm := range []ble.Arm{ble.Left, ble.Right} {
-		if err := transport.Connect(ctx, arm); err != nil {
+	return client, nil
+}
+
+func connectWithTransport(ctx context.Context, transport ble.Transport, device Device, options ConnectOptions) (*Client, error) {
+	for _, selected := range []struct {
+		arm    ble.Arm
+		result ble.ScanResult
+	}{{ble.Left, device.Left}, {ble.Right, device.Right}} {
+		if err := transport.Connect(ctx, selected.arm, selected.result); err != nil {
 			return nil, err
 		}
 	}
 	client := NewClient(transport, options.Debug, options.Output)
+	client.device = device
 	if err := client.attachTransportNotifications(ctx); err != nil {
 		_ = client.Close()
 		return nil, err
@@ -62,12 +82,16 @@ func connectWithTransport(ctx context.Context, transport ble.Transport, options 
 
 // Reconnect reconnects both previously discovered arms and authenticates again.
 func (c *Client) Reconnect(ctx context.Context) error {
+	c.setState(Reconnecting)
 	c.stopDisplayRefresh()
 	c.stopHeartbeat()
 	c.stopNotifications()
 	c.notificationWG.Wait()
-	for _, arm := range []ble.Arm{ble.Left, ble.Right} {
-		if err := c.transport.Connect(ctx, arm); err != nil {
+	for _, selected := range []struct {
+		arm    ble.Arm
+		result ble.ScanResult
+	}{{ble.Left, c.device.Left}, {ble.Right, c.device.Right}} {
+		if err := c.transport.Connect(ctx, selected.arm, selected.result); err != nil {
 			return err
 		}
 	}
@@ -77,7 +101,23 @@ func (c *Client) Reconnect(ctx context.Context) error {
 	return c.Authenticate(ctx)
 }
 
+// Disconnect stops background work and disconnects the selected device.
+// The client may be connected again with Reconnect.
+func (c *Client) Disconnect() error {
+	c.stopAutoReconnect()
+	c.stopDisplayRefresh()
+	c.stopLifecycle()
+	c.stopHeartbeat()
+	c.stopNotifications()
+	c.failPendingAcks(ble.ErrDisconnected)
+	err := c.transport.Close()
+	c.notificationWG.Wait()
+	c.setState(Disconnected)
+	return err
+}
+
 func (c *Client) attachTransportNotifications(ctx context.Context) error {
+	c.audioAvailable.Store(false)
 	for _, arm := range []ble.Arm{ble.Left, ble.Right} {
 		notifications, err := c.transport.Subscribe(ctx, arm)
 		if err != nil {
@@ -91,10 +131,11 @@ func (c *Client) attachTransportNotifications(ctx context.Context) error {
 			if err != nil {
 				continue
 			}
-			c.audioAvailable = true
+			c.audioAvailable.Store(true)
 			c.AttachAudioNotifications(ctx, arm, notifications)
 		}
 	}
+	c.publishStatus()
 	return nil
 }
 
@@ -136,33 +177,4 @@ func (c *Client) stopAutoReconnect() {
 		cancel()
 		c.reconnectWG.Wait()
 	}
-}
-
-func discoverBoth(ctx context.Context, transport ble.Transport, timeout time.Duration) error {
-	scanCtx, cancel := context.WithTimeout(ctx, timeout)
-	defer cancel()
-	found := make(map[ble.Arm]bool, 2)
-	var mu sync.Mutex
-	err := transport.Scan(scanCtx, func(result ble.ScanResult) {
-		mu.Lock()
-		found[result.Arm] = true
-		complete := found[ble.Left] && found[ble.Right]
-		mu.Unlock()
-		if complete {
-			cancel()
-		}
-	})
-	if err != nil && !errors.Is(err, context.Canceled) && !errors.Is(err, context.DeadlineExceeded) {
-		return err
-	}
-	mu.Lock()
-	left, right := found[ble.Left], found[ble.Right]
-	mu.Unlock()
-	if !left {
-		return ble.ErrLeftArmNotFound
-	}
-	if !right {
-		return ble.ErrRightArmNotFound
-	}
-	return nil
 }

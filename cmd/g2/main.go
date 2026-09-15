@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
@@ -36,7 +37,7 @@ func main() {
 
 func run(args []string) error {
 	if len(args) == 0 {
-		return errors.New("usage: g2 <scan|connect|auth|hello|text|native-text|list|image|mic|decode-lc3|decode-packet|serve>")
+		return errors.New("usage: g2 <scan|connect|auth|settings|brightness|head-up|screen-position|dashboard|hello|text|native-text|list|image|mic|decode-lc3|decode-packet|serve>")
 	}
 
 	switch args[0] {
@@ -46,6 +47,16 @@ func run(args []string) error {
 		return runConnect(args[1:])
 	case "auth":
 		return runAuth(args[1:])
+	case "settings":
+		return runSettings(args[1:])
+	case "brightness":
+		return runBrightness(args[1:])
+	case "head-up":
+		return runHeadUp(args[1:])
+	case "screen-position":
+		return runScreenPosition(args[1:])
+	case "dashboard":
+		return runDashboard(args[1:])
 	case "hello":
 		return runDisplay(args[1:], "Hello G2")
 	case "text":
@@ -65,8 +76,94 @@ func run(args []string) error {
 	case "decode-packet":
 		return runDecodePacket(args[1:])
 	default:
-		return fmt.Errorf("unknown command %q; usage: g2 <scan|connect|auth|hello|text|native-text|list|image|mic|decode-lc3|decode-packet|serve>", args[0])
+		return fmt.Errorf("unknown command %q", args[0])
 	}
+}
+
+func withClient(scanTimeout time.Duration, debug bool, run func(context.Context, *g2.Client) error) error {
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+	client, err := g2.Connect(ctx, g2.ConnectOptions{ScanTimeout: scanTimeout, Debug: debug, Output: os.Stdout})
+	if err != nil {
+		return err
+	}
+	defer client.Close()
+	return run(ctx, client)
+}
+
+func runSettings(args []string) error {
+	flags := flag.NewFlagSet("settings", flag.ContinueOnError)
+	scanTimeout := flags.Duration("scan-timeout", defaultScanTimeout, "BLE scan duration")
+	debug := flags.Bool("debug", false, "print TX and RX packet bytes")
+	if err := flags.Parse(args); err != nil {
+		return err
+	}
+	return withClient(*scanTimeout, *debug, func(ctx context.Context, client *g2.Client) error {
+		settings, err := client.RequestDeviceSettings(ctx)
+		if err != nil {
+			return err
+		}
+		encoded, err := json.MarshalIndent(settings, "", "  ")
+		if err != nil {
+			return err
+		}
+		fmt.Println(string(encoded))
+		return nil
+	})
+}
+
+func runBrightness(args []string) error {
+	flags := flag.NewFlagSet("brightness", flag.ContinueOnError)
+	level := flags.Int("level", 50, "brightness level 0..100")
+	automatic := flags.Bool("auto", false, "enable ambient auto brightness")
+	scanTimeout := flags.Duration("scan-timeout", defaultScanTimeout, "BLE scan duration")
+	debug := flags.Bool("debug", false, "print TX and RX packet bytes")
+	if err := flags.Parse(args); err != nil {
+		return err
+	}
+	return withClient(*scanTimeout, *debug, func(ctx context.Context, client *g2.Client) error {
+		return client.SetBrightness(ctx, g2.BrightnessOptions{Level: *level, Auto: *automatic})
+	})
+}
+
+func runHeadUp(args []string) error {
+	flags := flag.NewFlagSet("head-up", flag.ContinueOnError)
+	enabled := flags.Bool("enabled", true, "enable head-up dashboard")
+	angle := flags.Int("angle", 30, "trigger angle 0..60")
+	scanTimeout := flags.Duration("scan-timeout", defaultScanTimeout, "BLE scan duration")
+	debug := flags.Bool("debug", false, "print TX and RX packet bytes")
+	if err := flags.Parse(args); err != nil {
+		return err
+	}
+	return withClient(*scanTimeout, *debug, func(ctx context.Context, client *g2.Client) error {
+		return client.SetHeadUp(ctx, *enabled, *angle)
+	})
+}
+
+func runScreenPosition(args []string) error {
+	flags := flag.NewFlagSet("screen-position", flag.ContinueOnError)
+	height := flags.Int("height", 0, "vertical position 0..12")
+	depth := flags.Int("depth", 0, "depth position 0..2")
+	scanTimeout := flags.Duration("scan-timeout", defaultScanTimeout, "BLE scan duration")
+	debug := flags.Bool("debug", false, "print TX and RX packet bytes")
+	if err := flags.Parse(args); err != nil {
+		return err
+	}
+	return withClient(*scanTimeout, *debug, func(ctx context.Context, client *g2.Client) error {
+		return client.SetScreenPosition(ctx, g2.ScreenPosition{Height: *height, Depth: *depth})
+	})
+}
+
+func runDashboard(args []string) error {
+	flags := flag.NewFlagSet("dashboard", flag.ContinueOnError)
+	scanTimeout := flags.Duration("scan-timeout", defaultScanTimeout, "BLE scan duration")
+	debug := flags.Bool("debug", false, "print TX and RX packet bytes")
+	if err := flags.Parse(args); err != nil {
+		return err
+	}
+	return withClient(*scanTimeout, *debug, func(ctx context.Context, client *g2.Client) error {
+		return client.ShowDashboard(ctx)
+	})
 }
 
 func runDecodePacket(args []string) error {
@@ -210,6 +307,7 @@ func runMic(args []string) error {
 		defer decoder.Close()
 	}
 	fmt.Println("[MIC] recording raw LC3 frames; press Ctrl-C to stop")
+	audioFrames := client.SubscribeAudio(ctx)
 	count := 0
 	lastCounters := make(map[ble.Arm]byte)
 	seenCounters := make(map[ble.Arm]bool)
@@ -219,7 +317,7 @@ func runMic(args []string) error {
 			return nil
 		case err := <-client.Errors():
 			return err
-		case frame := <-client.AudioFrames():
+		case frame := <-audioFrames:
 			count++
 			packet, parseErr := protocol.ParseG2AudioPacket(frame.Data)
 			if parseErr != nil {
@@ -347,19 +445,11 @@ func runImage(args []string) error {
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
-	transport := ble.NewTransport()
-	defer transport.Close()
-	if err := connectBoth(ctx, transport, *scanTimeout); err != nil {
+	client, err := g2.Connect(ctx, g2.ConnectOptions{ScanTimeout: *scanTimeout, Debug: *debug, Output: os.Stdout})
+	if err != nil {
 		return err
 	}
-	client := g2.NewClient(transport, *debug, os.Stdout)
 	defer client.Close()
-	if err := attachNotifications(ctx, client, transport); err != nil {
-		return err
-	}
-	if err := client.Authenticate(ctx); err != nil {
-		return err
-	}
 	if err := client.DisplayImage(ctx, decoded); err != nil {
 		return err
 	}
@@ -389,19 +479,11 @@ func runNative(args []string, list bool) error {
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
-	transport := ble.NewTransport()
-	defer transport.Close()
-	if err := connectBoth(ctx, transport, *scanTimeout); err != nil {
+	client, err := g2.Connect(ctx, g2.ConnectOptions{ScanTimeout: *scanTimeout, Debug: *debug, Output: os.Stdout})
+	if err != nil {
 		return err
 	}
-	client := g2.NewClient(transport, *debug, os.Stdout)
 	defer client.Close()
-	if err := attachNotifications(ctx, client, transport); err != nil {
-		return err
-	}
-	if err := client.Authenticate(ctx); err != nil {
-		return err
-	}
 	if list {
 		if err := client.DisplayList(ctx, "hud", content); err != nil {
 			return err
@@ -410,6 +492,7 @@ func runNative(args []string, list bool) error {
 		return err
 	}
 	fmt.Println("[NATIVE] displaying; interact with the glasses or press Ctrl-C to stop")
+	events := client.SubscribeEvents(ctx)
 
 	for {
 		select {
@@ -417,7 +500,7 @@ func runNative(args []string, list bool) error {
 			return nil
 		case err := <-client.Errors():
 			return err
-		case event := <-client.Events():
+		case event := <-events:
 			fmt.Printf("[EVENT] kind=%s name=%q item=%q index=%d type=%s(%d) data=%d\n",
 				event.Kind, event.Name, event.ItemName, event.ItemIndex,
 				protocol.EvenHubEventTypeName(event.Type), event.Type, event.EventData)
@@ -437,20 +520,12 @@ func runConnect(args []string) error {
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
-	transport := ble.NewTransport()
-	defer transport.Close()
-	if err := connectBoth(ctx, transport, *scanTimeout); err != nil {
+	client, err := g2.Connect(ctx, g2.ConnectOptions{ScanTimeout: *scanTimeout, Debug: true, Output: os.Stdout})
+	if err != nil {
 		return err
 	}
-	for _, arm := range []ble.Arm{ble.Left, ble.Right} {
-		notifications, err := transport.Subscribe(ctx, arm)
-		if err != nil {
-			return err
-		}
-		go logNotifications(arm, notifications)
-	}
-
-	fmt.Println("[BLE] both arms ready; press Ctrl-C to disconnect")
+	defer client.Close()
+	fmt.Println("[BLE] authenticated and ready; press Ctrl-C to disconnect")
 	<-ctx.Done()
 	return nil
 }
@@ -468,20 +543,11 @@ func runAuth(args []string) error {
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
-	transport := ble.NewTransport()
-	defer transport.Close()
-	if err := connectBoth(ctx, transport, *scanTimeout); err != nil {
+	client, err := g2.Connect(ctx, g2.ConnectOptions{ScanTimeout: *scanTimeout, Debug: *debug, Output: os.Stdout})
+	if err != nil {
 		return err
 	}
-
-	client := g2.NewClient(transport, *debug, os.Stdout)
 	defer client.Close()
-	if err := attachNotifications(ctx, client, transport); err != nil {
-		return err
-	}
-	if err := client.Authenticate(ctx); err != nil {
-		return err
-	}
 	fmt.Println("[AUTH] ready")
 	return nil
 }
@@ -508,20 +574,11 @@ func runDisplay(args []string, fixedText string) error {
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
-	transport := ble.NewTransport()
-	defer transport.Close()
-	if err := connectBoth(ctx, transport, *scanTimeout); err != nil {
+	client, err := g2.Connect(ctx, g2.ConnectOptions{ScanTimeout: *scanTimeout, Debug: *debug, Output: os.Stdout})
+	if err != nil {
 		return err
 	}
-
-	client := g2.NewClient(transport, *debug, os.Stdout)
 	defer client.Close()
-	if err := attachNotifications(ctx, client, transport); err != nil {
-		return err
-	}
-	if err := client.Authenticate(ctx); err != nil {
-		return err
-	}
 	if err := client.DisplayText(ctx, text); err != nil {
 		return err
 	}
@@ -532,66 +589,6 @@ func runDisplay(args []string, fixedText string) error {
 		return nil
 	case err := <-client.Errors():
 		return err
-	}
-}
-
-func connectBoth(ctx context.Context, transport ble.Transport, scanTimeout time.Duration) error {
-	scanCtx, cancelScan := context.WithTimeout(ctx, scanTimeout)
-	defer cancelScan()
-
-	found := make(map[ble.Arm]bool, 2)
-	var foundMu sync.Mutex
-	fmt.Printf("[SCAN] searching for both G2 arms for %s...\n", scanTimeout)
-	err := transport.Scan(scanCtx, func(result ble.ScanResult) {
-		foundMu.Lock()
-		if !found[result.Arm] {
-			found[result.Arm] = true
-			fmt.Printf("[SCAN] %-5s name=%q address=%s rssi=%d\n", result.Arm, result.Name, result.Address, result.RSSI)
-		}
-		bothFound := found[ble.Left] && found[ble.Right]
-		foundMu.Unlock()
-		if bothFound {
-			cancelScan()
-		}
-	})
-	if err != nil && !errors.Is(err, context.Canceled) && !errors.Is(err, context.DeadlineExceeded) {
-		return err
-	}
-
-	foundMu.Lock()
-	leftFound, rightFound := found[ble.Left], found[ble.Right]
-	foundMu.Unlock()
-	if !leftFound {
-		return ble.ErrLeftArmNotFound
-	}
-	if !rightFound {
-		return ble.ErrRightArmNotFound
-	}
-
-	for _, arm := range []ble.Arm{ble.Left, ble.Right} {
-		fmt.Printf("[BLE] %s connecting...\n", arm)
-		if err := transport.Connect(ctx, arm); err != nil {
-			return err
-		}
-		fmt.Printf("[BLE] %s connected; GATT ready; notify enabled\n", arm)
-	}
-	return nil
-}
-
-func attachNotifications(ctx context.Context, client *g2.Client, transport ble.Transport) error {
-	for _, arm := range []ble.Arm{ble.Left, ble.Right} {
-		notifications, err := transport.Subscribe(ctx, arm)
-		if err != nil {
-			return err
-		}
-		client.AttachNotifications(ctx, arm, notifications)
-	}
-	return nil
-}
-
-func logNotifications(arm ble.Arm, notifications <-chan []byte) {
-	for packet := range notifications {
-		fmt.Printf("[RX][%s] % X\n", arm, packet)
 	}
 }
 

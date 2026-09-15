@@ -14,9 +14,21 @@
 实现位于 `protocol/application.go`。这些能力只负责 transport envelope，不推断内部
 protobuf schema。
 
-## 暂不吸收
+## 后续公开实现补充（2026-09）
 
-- Dashboard `cmdId=7/8/9` 构造：字段编号、页面关联和图片包装仍是实验性假设。
+- MentraOS 当前 G2 驱动、`g2-kit-unofficial` 和 `open-g2-companion` 已交叉给出
+  service `0x09` 的基础设置查询、响应字段、亮度、head-up 和屏幕位置构造。
+- `g2-kit-unofficial` 的端到端示例读取电池、充电和左右固件版本；
+  `open-g2-companion` 标注该路径已对官方 App 和真机验证。
+- 原生 Dashboard 当前实现使用 service `0x01`，可配置 widget 顺序并向 Schedule
+  注入内容；显示原生 Dashboard 前需先 shutdown 活跃的 EvenHub 页面并恢复 head-up。
+
+对应 Go 实现位于 `protocol/settings.go`、`protocol/dashboard.go`、
+`g2/settings.go` 和 `g2/dashboard.go`。Dashboard 内容注入在本项目完成真机确认前保持实验性。
+
+## 仍暂不吸收
+
+- Dashboard 原始图片渲染 `cmdId=7/8/9`：页面关联和图片包装仍缺少足够黄金样本。
 - Even RLE：仓库只确认相关符号存在，未给出经过样本验证的编码算法。
 - OTA、文件服务和 Ring relay：目前主要是类名、命令名和流程描述，缺少可验证 payload。
 - `6401/6402`、`7401/7402` 通用通道 API：`psType` 路由已由 Android DEX 确认，但不同

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"time"
 
 	"github.com/Wang-Yu-Che/even-g2-go/ble"
 	"github.com/Wang-Yu-Che/even-g2-go/protocol"
@@ -17,6 +18,13 @@ type nativeShape int
 type TextStyle struct {
 	X, Y, Width, Height                                   int
 	BorderWidth, BorderColor, BorderRadius, PaddingLength int
+}
+
+// StatusIcon is a small 4-bit BMP rendered beside native text.
+type StatusIcon struct {
+	ID, X, Y, Width, Height int
+	Name                    string
+	BMP                     []byte
 }
 
 const (
@@ -75,6 +83,101 @@ func (c *Client) ShowTextWithStyle(ctx context.Context, name, content string, st
 	return nil
 }
 
+// ShowTextWithIcon creates a native page with independently updateable text
+// and bitmap containers. The bitmap is transmitted only when this method is
+// called; later text updates keep using the cheap Cmd=5 path.
+func (c *Client) ShowTextWithIcon(ctx context.Context, name, content string, style TextStyle, icon StatusIcon) error {
+	c.imageMu.Lock()
+	defer c.imageMu.Unlock()
+	c.nativeMu.Lock()
+	defer c.nativeMu.Unlock()
+	if c.Left.State() != Ready || c.Right.State() != Ready {
+		return ble.ErrDisconnected
+	}
+	c.stopDisplayRefresh()
+	c.stopHeartbeat()
+	if c.nativeCreated {
+		magic := c.nextEvenHubMagic()
+		if err := c.sendNativeCommand(ctx, protocol.BuildEvenHubShutdown(magic), magic); err != nil {
+			c.startHeartbeat(ctx)
+			return err
+		}
+		c.nativeCreated = false
+	}
+	c.logPacket("TX", ble.Right, protocol.EvenHubPrelude)
+	if err := c.transport.Write(ctx, ble.Right, protocol.EvenHubPrelude); err != nil {
+		c.startHeartbeat(ctx)
+		return err
+	}
+	if err := sleepContext(ctx, c.nativePreludeDelay); err != nil {
+		c.startHeartbeat(ctx)
+		return err
+	}
+	payload, err := protocol.BuildEvenHubCreateTextImage(name, content,
+		protocol.EvenHubGeometry{X: style.X, Y: style.Y, Width: style.Width, Height: style.Height},
+		protocol.EvenHubTextStyle{BorderWidth: style.BorderWidth, BorderColor: style.BorderColor, BorderRadius: style.BorderRadius, PaddingLength: style.PaddingLength},
+		protocol.EvenHubImage{ID: icon.ID, Name: icon.Name, X: icon.X, Y: icon.Y, Width: icon.Width, Height: icon.Height, BMP: icon.BMP}, 201)
+	if err != nil {
+		return err
+	}
+	response, err := c.sendEvenHubAck(ctx, payload, 201, c.evenHubAckTimeout)
+	if err != nil || (response.Result != nil && *response.Result%2 != 0) {
+		c.startHeartbeat(ctx)
+		if err != nil {
+			return err
+		}
+		return fmt.Errorf("%w: create result=%d", ErrEvenHubRejected, *response.Result)
+	}
+	if err := sleepContext(ctx, c.nativeCreateDelay); err != nil {
+		return err
+	}
+	// Firmware drops the first image burst after CREATE; a small icon fits in one
+	// fragment, so one sacrificial send is enough to warm the container.
+	if err := c.sendNativeIcon(ctx, icon, true); err != nil {
+		return err
+	}
+	c.nativeCreated = true
+	c.nativeShape = nativeShapeText
+	c.nativeIconID, c.nativeIconName = icon.ID, icon.Name
+	c.evenHubMu.Lock()
+	c.evenHubActive = true
+	c.evenHubMu.Unlock()
+	c.startHeartbeat(ctx)
+	return nil
+}
+
+// UpdateStatusIcon replaces the bitmap in a mixed native page.
+func (c *Client) UpdateStatusIcon(ctx context.Context, icon StatusIcon) error {
+	c.imageMu.Lock()
+	defer c.imageMu.Unlock()
+	if !c.nativeCreated || c.nativeIconID != icon.ID || c.nativeIconName != icon.Name {
+		return errors.New("native icon container is not active")
+	}
+	return c.sendNativeIcon(ctx, icon, false)
+}
+
+func (c *Client) sendNativeIcon(ctx context.Context, icon StatusIcon, warmup bool) error {
+	sends := 1
+	if warmup {
+		sends = 2
+	}
+	for range sends {
+		magic := c.nextEvenHubMagic()
+		payload, err := protocol.BuildEvenHubImageFragment(icon.ID, icon.Name, c.nextImageSession(), len(icon.BMP), 0, icon.BMP, magic)
+		if err != nil {
+			return err
+		}
+		response, err := c.sendEvenHubAck(ctx, payload, magic, 10*time.Second)
+		if err != nil {
+			return err
+		}
+		if response.Result == nil || *response.Result != 4 {
+			return ErrEvenHubRejected
+		}
+	}
+	return nil
+}
+
 // UpdateText replaces text in place, or creates the text shape when necessary.
 func (c *Client) UpdateText(ctx context.Context, name, content string) error {
 	c.nativeMu.Lock()
@@ -93,6 +196,37 @@ func (c *Client) UpdateText(ctx context.Context, name, content string) error {
 	if err := c.sendNativeCommand(ctx, payload, magic); err != nil {
 		return err
 	}
+	c.startHeartbeat(ctx)
+	return nil
+}
+
+// ShutdownNative closes the active EvenHub page and frees its containers.
+func (c *Client) ShutdownNative(ctx context.Context) error {
+	c.nativeMu.Lock()
+	defer c.nativeMu.Unlock()
+
+	if c.Left.State() != Ready || c.Right.State() != Ready {
+		return ble.ErrDisconnected
+	}
+	c.stopDisplayRefresh()
+	c.stopHeartbeat()
+	if !c.nativeCreated {
+		c.startHeartbeat(ctx)
+		return nil
+	}
+
+	magic := c.nextEvenHubMagic()
+	if err := c.sendNativeCommand(ctx, protocol.BuildEvenHubShutdown(magic), magic); err != nil {
+		c.startHeartbeat(ctx)
+		return err
+	}
+	c.nativeCreated = false
+	c.nativeShape = nativeShapeNone
+	c.nativeIconID = 0
+	c.nativeIconName = ""
+	c.evenHubMu.Lock()
+	c.evenHubActive = false
+	c.evenHubMu.Unlock()
 	c.startHeartbeat(ctx)
 	return nil
 }

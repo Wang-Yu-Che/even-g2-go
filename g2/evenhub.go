@@ -17,24 +17,42 @@ type evenHubAck struct {
 	err      error
 }
 
-// EventHandlers receives semantic native-container input callbacks.
-type EventHandlers struct {
-	OnListTap   func(name string, index int, itemName string)
-	OnTextTap   func(name string)
-	OnPageEvent func(name string, eventType int)
-	OnDoubleTap func()
-}
+// EventHandler receives one decoded native-container event.
+type EventHandler func(protocol.EvenHubEvent)
 
-// SetEventHandlers replaces the native-container callback set.
-func (c *Client) SetEventHandlers(handlers EventHandlers) {
+// OnEvent registers an event handler and returns its unsubscribe function.
+func (c *Client) OnEvent(handler EventHandler) func() {
+	if handler == nil {
+		return func() {}
+	}
 	c.eventHandlerMu.Lock()
-	c.eventHandlers = handlers
+	id := c.nextHandlerID
+	c.nextHandlerID++
+	c.eventHandlers[id] = handler
 	c.eventHandlerMu.Unlock()
+	return func() {
+		c.eventHandlerMu.Lock()
+		delete(c.eventHandlers, id)
+		c.eventHandlerMu.Unlock()
+	}
 }
 
-// Events returns decoded native-container input events.
-func (c *Client) Events() <-chan protocol.EvenHubEvent {
-	return c.events
+// SubscribeEvents returns an independent event stream tied to ctx.
+func (c *Client) SubscribeEvents(ctx context.Context) <-chan protocol.EvenHubEvent {
+	events := make(chan protocol.EvenHubEvent, 32)
+	c.subscriberMu.Lock()
+	id := c.nextSubscriberID
+	c.nextSubscriberID++
+	c.eventSubscribers[id] = events
+	c.subscriberMu.Unlock()
+	go func() {
+		<-ctx.Done()
+		c.subscriberMu.Lock()
+		delete(c.eventSubscribers, id)
+		close(events)
+		c.subscriberMu.Unlock()
+	}()
+	return events
 }
 
 // AttachNotifications routes one arm's notification stream through the client.
@@ -79,7 +97,7 @@ func (c *Client) HandleNotification(arm ble.Arm, data []byte) {
 	c.logPacket("RX", arm, data)
 	// G2 replies use AA 12 while requests use AA 21. OpenEvenSdk therefore
 	// checks only the first magic byte and the EvenHub service ID on RX.
-	if len(data) < 9 || data[0] != protocol.PacketMagic0 || data[6] != protocol.EvenHubServiceID {
+	if len(data) < 9 || data[0] != protocol.PacketMagic0 {
 		return
 	}
 	payload := data[8:]
@@ -89,6 +107,25 @@ func (c *Client) HandleNotification(arm ble.Arm, data []byte) {
 		if protocol.CRC16CCITT(body) == crc {
 			payload = body
 		}
+	}
+	if data[6] == protocol.G2SettingsServiceID {
+		magic, parseErr := protocol.ParseSettingsMagic(payload)
+		if parseErr != nil || magic < 0 {
+			return
+		}
+		c.evenHubMu.Lock()
+		waiter := c.pendingSettings[magic]
+		if waiter != nil {
+			delete(c.pendingSettings, magic)
+		}
+		c.evenHubMu.Unlock()
+		if waiter != nil {
+			waiter <- settingsReply{payload: append([]byte(nil), payload...)}
+		}
+		return
+	}
+	if data[6] != protocol.EvenHubServiceID {
+		return
 	}
 	if data[7] == 0x01 || data[7] == 0x06 {
 		event, parseErr := protocol.ParseEvenHubEvent(payload)
@@ -105,10 +142,7 @@ func (c *Client) HandleNotification(arm ble.Arm, data []byte) {
 			c.evenHubActive = false
 			c.evenHubMu.Unlock()
 		}
-		select {
-		case c.events <- event:
-		default:
-		}
+		c.publishEvent(event)
 		c.dispatchEvenHubEvent(event)
 		return
 	}
@@ -133,7 +167,10 @@ func (c *Client) HandleNotification(arm ble.Arm, data []byte) {
 func (c *Client) dispatchEvenHubEvent(event protocol.EvenHubEvent) {
 	now := time.Now()
 	c.eventHandlerMu.Lock()
-	handlers := c.eventHandlers
+	handlers := make([]EventHandler, 0, len(c.eventHandlers))
+	for _, handler := range c.eventHandlers {
+		handlers = append(handlers, handler)
+	}
 	if event.Type == protocol.EvenHubEventDoubleClick && (event.Kind == protocol.EvenHubEventList || event.Kind == protocol.EvenHubEventText || event.Kind == protocol.EvenHubEventSystem) {
 		if now.Sub(c.lastBackAt) < 450*time.Millisecond {
 			c.eventHandlerMu.Unlock()
@@ -141,8 +178,8 @@ func (c *Client) dispatchEvenHubEvent(event protocol.EvenHubEvent) {
 		}
 		c.lastBackAt = now
 		c.eventHandlerMu.Unlock()
-		if handlers.OnDoubleTap != nil {
-			handlers.OnDoubleTap()
+		for _, handler := range handlers {
+			handler(event)
 		}
 		return
 	}
@@ -156,26 +193,18 @@ func (c *Client) dispatchEvenHubEvent(event protocol.EvenHubEvent) {
 	}
 	c.eventHandlerMu.Unlock()
 
-	switch event.Kind {
-	case protocol.EvenHubEventList:
-		if event.Type == protocol.EvenHubEventClick && handlers.OnListTap != nil {
-			handlers.OnListTap(event.Name, event.ItemIndex, event.ItemName)
-		} else if event.Type != 0 && handlers.OnPageEvent != nil {
-			handlers.OnPageEvent(event.Name, event.Type)
-		}
-	case protocol.EvenHubEventText:
-		if event.Type == protocol.EvenHubEventClick && handlers.OnTextTap != nil {
-			handlers.OnTextTap(event.Name)
-		} else if event.Type != 0 && handlers.OnPageEvent != nil {
-			handlers.OnPageEvent(event.Name, event.Type)
-		}
-	case protocol.EvenHubEventSystem:
-		if handlers.OnPageEvent != nil {
-			handlers.OnPageEvent("", event.Type)
-		}
-	case protocol.EvenHubEventPrivate:
-		if handlers.OnPageEvent != nil {
-			handlers.OnPageEvent(event.Name, event.EventData)
+	for _, handler := range handlers {
+		handler(event)
+	}
+}
+
+func (c *Client) publishEvent(event protocol.EvenHubEvent) {
+	c.subscriberMu.Lock()
+	defer c.subscriberMu.Unlock()
+	for _, events := range c.eventSubscribers {
+		select {
+		case events <- event:
+		default:
 		}
 	}
 }
@@ -262,8 +291,13 @@ func (c *Client) failPendingAcks(err error) {
 	c.evenHubMu.Lock()
 	waiters := c.pendingAcks
 	c.pendingAcks = make(map[int]chan evenHubAck)
+	settingsWaiters := c.pendingSettings
+	c.pendingSettings = make(map[int]chan settingsReply)
 	c.evenHubMu.Unlock()
 	for _, waiter := range waiters {
 		waiter <- evenHubAck{err: err}
+	}
+	for _, waiter := range settingsWaiters {
+		waiter <- settingsReply{err: err}
 	}
 }

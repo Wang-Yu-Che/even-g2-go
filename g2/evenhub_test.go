@@ -63,11 +63,12 @@ func TestEvenHubAckTimeout(t *testing.T) {
 
 func TestEvenHubEventIsPublished(t *testing.T) {
 	client := testClient(&recordingTransport{})
+	events := client.SubscribeEvents(t.Context())
 	payload := []byte{0x08, 0x02, 0x6A, 0x09, 0x12, 0x07, 0x12, 0x03, 'h', 'u', 'd', 0x18, 0x03}
 	client.HandleNotification(ble.Right, protocol.BuildPacket(0x02, protocol.EvenHubServiceID, 0x01, payload))
 
 	select {
-	case event := <-client.Events():
+	case event := <-events:
 		if event.Kind != protocol.EvenHubEventText || event.Name != "hud" || event.Type != 3 {
 			t.Fatalf("event = %#v", event)
 		}
@@ -76,14 +77,33 @@ func TestEvenHubEventIsPublished(t *testing.T) {
 	}
 }
 
+func TestEvenHubEventIsBroadcastToSubscribers(t *testing.T) {
+	client := testClient(&recordingTransport{})
+	first := client.SubscribeEvents(t.Context())
+	second := client.SubscribeEvents(t.Context())
+	event := protocol.EvenHubEvent{Kind: protocol.EvenHubEventText, Name: "hud", Type: 3}
+	client.publishEvent(event)
+	for index, events := range []<-chan protocol.EvenHubEvent{first, second} {
+		select {
+		case got := <-events:
+			if got != event {
+				t.Fatalf("subscriber %d event = %#v", index, got)
+			}
+		case <-time.After(time.Second):
+			t.Fatalf("subscriber %d timed out", index)
+		}
+	}
+}
+
 func TestEvenHubAcceptsEitherArmNotification(t *testing.T) {
 	client := testClient(&recordingTransport{})
+	events := client.SubscribeEvents(t.Context())
 	payload := []byte{0x08, 0x02, 0x6A, 0x09, 0x12, 0x07, 0x12, 0x03, 'h', 'u', 'd', 0x18, 0x03}
 	packet := protocol.BuildPacket(0x02, protocol.EvenHubServiceID, 0x01, payload)
 	packet[3] = 0 // Firmware RX headers are not required to mirror TX length semantics.
 	client.HandleNotification(ble.Left, packet)
 	select {
-	case event := <-client.Events():
+	case event := <-events:
 		if event.Kind != protocol.EvenHubEventText {
 			t.Fatalf("event = %#v", event)
 		}
@@ -95,7 +115,7 @@ func TestEvenHubAcceptsEitherArmNotification(t *testing.T) {
 func TestEvenHubCallbacksDebounceDuplicateTap(t *testing.T) {
 	client := testClient(&recordingTransport{})
 	count := 0
-	client.SetEventHandlers(EventHandlers{OnListTap: func(_ string, _ int, _ string) { count++ }})
+	client.OnEvent(func(protocol.EvenHubEvent) { count++ })
 	event := protocol.EvenHubEvent{Kind: protocol.EvenHubEventList, Name: "hud", ItemName: "one"}
 	client.dispatchEvenHubEvent(event)
 	client.dispatchEvenHubEvent(event)

@@ -76,3 +76,13 @@ func TestBuildEvenHubImageMessages(t *testing.T) {
 		t.Fatalf("fragment = % X, want % X", fragment, want)
 	}
 }
+
+func TestBuildEvenHubCreateTextImage(t *testing.T) {
+	payload, err := BuildEvenHubCreateTextImage("status", "running", EvenHubGeometry{X: 64, Y: 20, Width: 492, Height: 248}, EvenHubTextStyle{}, EvenHubImage{ID: 2, Name: "state", X: 20, Y: 24, Width: 32, Height: 32}, 201)
+	if err != nil {
+		t.Fatalf("BuildEvenHubCreateTextImage() error = %v", err)
+	}
+	if len(payload) == 0 || payload[0] != 0x10 {
+		t.Fatalf("payload = %x", payload)
+	}
+}

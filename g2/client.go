@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/Wang-Yu-Che/even-g2-go/ble"
@@ -20,6 +21,7 @@ type Client struct {
 	Right *Connection
 
 	transport ble.Transport
+	device    Device
 	debug     bool
 	output    io.Writer
 	now       func() time.Time
@@ -37,13 +39,16 @@ type Client struct {
 	heartbeatSequence byte
 	lifecycleStop     func() bool
 	errors            chan error
-	events            chan protocol.EvenHubEvent
+	eventSubscribers  map[uint64]chan protocol.EvenHubEvent
+	nextSubscriberID  uint64
+	statusSubscribers map[uint64]chan Status
+	subscriberMu      sync.Mutex
 	notificationMu    sync.Mutex
 	notificationStops []context.CancelFunc
 	notificationWG    sync.WaitGroup
 	disconnects       chan struct{}
-	audioFrames       chan AudioFrame
-	audioAvailable    bool
+	audioSubscribers  map[uint64]chan AudioFrame
+	audioAvailable    atomic.Bool
 	reconnectMu       sync.Mutex
 	reconnectCancel   context.CancelFunc
 	reconnectWG       sync.WaitGroup
@@ -54,19 +59,26 @@ type Client struct {
 	evenHubMagic     int
 	evenHubChunkSize int
 	pendingAcks      map[int]chan evenHubAck
+	pendingSettings  map[int]chan settingsReply
 	evenHubActive    bool
 
 	nativeMu           sync.Mutex
 	nativeCreated      bool
 	nativeShape        nativeShape
+	nativeIconID       int
+	nativeIconName     string
 	nativePreludeDelay time.Duration
 	nativeCreateDelay  time.Duration
 	evenHubAckTimeout  time.Duration
 
 	eventHandlerMu sync.Mutex
-	eventHandlers  EventHandlers
+	eventHandlers  map[uint64]EventHandler
+	nextHandlerID  uint64
 	lastTapAt      time.Time
 	lastBackAt     time.Time
+	settingsMu     sync.RWMutex
+	settings       DeviceSettings
+	settingsKnown  atomic.Bool
 
 	imageMu          sync.Mutex
 	imagePrimed      bool
@@ -106,12 +118,15 @@ func NewClient(transport ble.Transport, debug bool, output io.Writer) *Client {
 		heartbeatInterval:      1500 * time.Millisecond,
 		heartbeatSequence:      0xC0,
 		errors:                 make(chan error, 1),
-		events:                 make(chan protocol.EvenHubEvent, 32),
+		eventSubscribers:       make(map[uint64]chan protocol.EvenHubEvent),
+		statusSubscribers:      make(map[uint64]chan Status),
+		eventHandlers:          make(map[uint64]EventHandler),
 		disconnects:            make(chan struct{}, 1),
-		audioFrames:            make(chan AudioFrame, 64),
+		audioSubscribers:       make(map[uint64]chan AudioFrame),
 		evenHubMagic:           1,
 		evenHubChunkSize:       180,
 		pendingAcks:            make(map[int]chan evenHubAck),
+		pendingSettings:        make(map[int]chan settingsReply),
 		nativePreludeDelay:     500 * time.Millisecond,
 		nativeCreateDelay:      200 * time.Millisecond,
 		evenHubAckTimeout:      3 * time.Second,
@@ -285,6 +300,13 @@ func (c *Client) sendHeartbeat(ctx context.Context) error {
 		if err != nil {
 			return err
 		}
+		// The heartbeat shares the right arm with image fragments, which are
+		// several frames long. The transport only serialises single writes, so
+		// without this lock a heartbeat frame can land between two frames of a
+		// fragment and corrupt it — the device then rejects the fragment, or
+		// the heartbeat's own write fails and the loop below closes the link.
+		c.evenHubWriteMu.Lock()
+		defer c.evenHubWriteMu.Unlock()
 		for _, frame := range frames {
 			c.logPacket("TX", ble.Right, frame)
 			if err := c.transport.Write(ctx, ble.Right, frame); err != nil {
@@ -321,6 +343,7 @@ func (c *Client) emitError(err error) {
 func (c *Client) setState(state State) {
 	c.Left.setState(state)
 	c.Right.setState(state)
+	c.publishStatus()
 }
 
 func (c *Client) log(format string, args ...any) {

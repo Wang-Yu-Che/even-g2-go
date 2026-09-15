@@ -117,6 +117,44 @@ func TestHeartbeatSequenceWrapsToC0(t *testing.T) {
 	}
 }
 
+// The EvenHub heartbeat shares the right arm with multi-frame messages such as
+// image fragments, which are written under evenHubWriteMu. If the heartbeat
+// writes without that lock, one of its frames can land between two frames of a
+// fragment and corrupt it; the failure then surfaces either as a rejected
+// fragment, or as a dropped link when the heartbeat's own write is the one that
+// errors and heartbeatLoop closes the transport.
+//
+// The invariant is checked from inside the write itself, so the test needs no
+// sleeping and cannot pass by accident of scheduling.
+func TestEvenHubHeartbeatHoldsTheFragmentLockWhileWriting(t *testing.T) {
+	transport := &recordingTransport{}
+	client := testClient(transport)
+	client.evenHubActive = true
+
+	writes := 0
+	heldWhileWriting := 0
+	transport.writeHook = func(ble.Arm, []byte) {
+		writes++
+		// TryLock fails exactly when the writer holds the fragment lock, which
+		// is the property under test.
+		if client.evenHubWriteMu.TryLock() {
+			client.evenHubWriteMu.Unlock()
+			return
+		}
+		heldWhileWriting++
+	}
+
+	if err := client.sendHeartbeat(t.Context()); err != nil {
+		t.Fatalf("sendHeartbeat() error = %v", err)
+	}
+	if writes == 0 {
+		t.Fatal("sendHeartbeat() wrote nothing")
+	}
+	if heldWhileWriting != writes {
+		t.Fatalf("held the fragment lock for %d of %d heartbeat writes; a heartbeat frame can interleave with a fragment", heldWhileWriting, writes)
+	}
+}
+
 func TestParentContextCancellationClosesTransport(t *testing.T) {
 	transport := &recordingTransport{}
 	client := testClient(transport)
@@ -176,7 +214,7 @@ func (t *recordingTransport) Scan(_ context.Context, report func(ble.ScanResult)
 	}
 	return nil
 }
-func (t *recordingTransport) Connect(context.Context, ble.Arm) error { return nil }
+func (t *recordingTransport) Connect(context.Context, ble.Arm, ble.ScanResult) error { return nil }
 func (t *recordingTransport) Subscribe(context.Context, ble.Arm) (<-chan []byte, error) {
 	return nil, nil
 }

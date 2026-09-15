@@ -56,6 +56,28 @@ func TestShowTextWithStylePrimesAndRebuildsNativePage(t *testing.T) {
 	}
 }
 
+func TestShutdownNativeClosesActivePage(t *testing.T) {
+	transport := &recordingTransport{}
+	client := testClient(transport)
+	client.setState(Ready)
+	client.nativeCreated = true
+	client.nativeShape = nativeShapeList
+	client.evenHubActive = true
+
+	go func() {
+		waitForWrites(t, transport, 1)
+		client.HandleNotification(ble.Right, protocol.BuildPacket(1, protocol.EvenHubServiceID, protocol.EvenHubRequest,
+			[]byte{0x08, 0x0A, 0x10, 0x01, 0x1A, 0x02, 0x08, 0x0A}))
+	}()
+
+	if err := client.ShutdownNative(t.Context()); err != nil {
+		t.Fatalf("ShutdownNative() error = %v", err)
+	}
+	if client.nativeCreated || client.nativeShape != nativeShapeNone || client.evenHubActive {
+		t.Fatalf("native state = shape %d, created %v, active %v", client.nativeShape, client.nativeCreated, client.evenHubActive)
+	}
+}
+
 func TestSystemExitClearsNativePage(t *testing.T) {
 	client := testClient(&recordingTransport{})
 	client.nativeCreated = true

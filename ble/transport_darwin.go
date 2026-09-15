@@ -26,7 +26,6 @@ type DarwinTransport struct {
 	scanner *Scanner
 
 	mu          sync.Mutex
-	discovered  map[Arm]ScanResult
 	connections map[Arm]*armConnection
 }
 
@@ -53,7 +52,6 @@ func NewTransport() *DarwinTransport {
 	t := &DarwinTransport{
 		adapter:     adapter,
 		scanner:     &Scanner{adapter: adapter},
-		discovered:  make(map[Arm]ScanResult, 2),
 		connections: make(map[Arm]*armConnection, 2),
 	}
 	adapter.SetConnectHandler(func(device bluetooth.Device, connected bool) {
@@ -70,34 +68,31 @@ func (t *DarwinTransport) Scan(ctx context.Context, report func(ScanResult)) err
 		return errors.New("scan report callback is nil")
 	}
 	return t.scanner.Scan(ctx, func(result ScanResult) {
-		t.mu.Lock()
-		if _, exists := t.discovered[result.Arm]; !exists {
-			t.discovered[result.Arm] = result
-		}
-		t.mu.Unlock()
 		report(result)
 	})
 }
 
 // Connect connects one discovered arm, discovers all GATT entries, selects the
 // control characteristics, and enables notifications.
-func (t *DarwinTransport) Connect(ctx context.Context, arm Arm) error {
+func (t *DarwinTransport) Connect(ctx context.Context, arm Arm, result ScanResult) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
 
+	if result.Arm != arm {
+		return fmt.Errorf("connect %s arm: scan result belongs to %s arm", arm, result.Arm)
+	}
+	if result.Address == "" {
+		return fmt.Errorf("connect %s arm: empty device address", arm)
+	}
+	if err := t.adapter.Enable(); err != nil {
+		return fmt.Errorf("enable Bluetooth adapter: %w", err)
+	}
 	t.mu.Lock()
-	result, found := t.discovered[arm]
 	_, connected := t.connections[arm]
 	t.mu.Unlock()
 	if connected {
 		return nil
-	}
-	if !found {
-		if arm == Left {
-			return ErrLeftArmNotFound
-		}
-		return ErrRightArmNotFound
 	}
 
 	uuid, err := bluetooth.ParseUUID(result.Address)

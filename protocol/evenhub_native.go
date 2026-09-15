@@ -14,6 +14,13 @@ type EvenHubTextStyle struct {
 	BorderWidth, BorderColor, BorderRadius, PaddingLength int
 }
 
+// EvenHubImage describes one bitmap container on a native page.
+type EvenHubImage struct {
+	ID, X, Y, Width, Height int
+	Name                    string
+	BMP                     []byte
+}
+
 var EvenHubFullLens = EvenHubGeometry{Width: 576, Height: 288}
 
 func BuildEvenHubCreateList(name string, rows []string, magic int) ([]byte, error) {
@@ -90,6 +97,34 @@ func BuildEvenHubCreateImages(tiles []ImageTile, magic int) ([]byte, error) {
 		object = append(object, protoString(6, tile.Name)...)
 		create = append(create, protoMessage(4, object)...)
 	}
+	create = append(create, protoUint(5, 10000)...)
+	payload := protoUint(2, magic)
+	return append(payload, protoMessage(3, create)...), nil
+}
+
+// BuildEvenHubCreateTextImage creates a mixed page containing one text and one
+// image container. The image pixels are sent separately with Cmd=3.
+func BuildEvenHubCreateTextImage(textName, content string, textGeometry EvenHubGeometry, style EvenHubTextStyle, image EvenHubImage, magic int) ([]byte, error) {
+	text, err := evenHubTextObject(1, textName, content, true, textGeometry, style)
+	if err != nil {
+		return nil, err
+	}
+	if err := validateEvenHubName(image.Name); err != nil {
+		return nil, err
+	}
+	if image.ID < 1 || image.Width < 1 || image.Height < 1 {
+		return nil, fmt.Errorf("invalid EvenHub image container: %+v", image)
+	}
+	imageObject := protoUint(1, image.X)
+	imageObject = append(imageObject, protoUint(2, image.Y)...)
+	imageObject = append(imageObject, protoUint(3, image.Width)...)
+	imageObject = append(imageObject, protoUint(4, image.Height)...)
+	imageObject = append(imageObject, protoUint(5, image.ID)...)
+	imageObject = append(imageObject, protoString(6, image.Name)...)
+
+	create := protoUint(1, 2)
+	create = append(create, protoMessage(3, text)...)
+	create = append(create, protoMessage(4, imageObject)...)
 	create = append(create, protoUint(5, 10000)...)
 	payload := protoUint(2, magic)
 	return append(payload, protoMessage(3, create)...), nil

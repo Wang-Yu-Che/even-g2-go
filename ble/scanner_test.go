@@ -28,19 +28,13 @@ func TestArmClassifier(t *testing.T) {
 			want:       []Arm{Left, Right},
 			classified: []bool{true, true},
 		},
-		{
-			name:       "fallback fills empty slots",
-			devices:    []string{"Even unknown 1", "Even unknown 2", "Even unknown 3"},
-			want:       []Arm{Left, Right, Left},
-			classified: []bool{true, true, false},
-		},
+		{name: "unknown side is rejected", devices: []string{"Even unknown"}, want: []Arm{Left}, classified: []bool{false}},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			classifier := armClassifier{}
 			for i, device := range tt.devices {
-				got, ok := classifier.classify(device)
+				got, ok := classifyArm(device)
 				if ok != tt.classified[i] {
 					t.Fatalf("classify(%q) ok = %t, want %t", device, ok, tt.classified[i])
 				}

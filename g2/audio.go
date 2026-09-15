@@ -16,8 +16,23 @@ type AudioFrame struct {
 	Data []byte
 }
 
-// AudioFrames returns raw LC3 microphone frames, typically about 205 bytes each.
-func (c *Client) AudioFrames() <-chan AudioFrame { return c.audioFrames }
+// SubscribeAudio returns an independent raw LC3 stream tied to ctx.
+func (c *Client) SubscribeAudio(ctx context.Context) <-chan AudioFrame {
+	frames := make(chan AudioFrame, 64)
+	c.subscriberMu.Lock()
+	id := c.nextSubscriberID
+	c.nextSubscriberID++
+	c.audioSubscribers[id] = frames
+	c.subscriberMu.Unlock()
+	go func() {
+		<-ctx.Done()
+		c.subscriberMu.Lock()
+		delete(c.audioSubscribers, id)
+		close(frames)
+		c.subscriberMu.Unlock()
+	}()
+	return frames
+}
 
 // AttachAudioNotifications routes a 6402 notification stream to AudioFrames.
 func (c *Client) AttachAudioNotifications(ctx context.Context, arm ble.Arm, notifications <-chan []byte) {
@@ -37,10 +52,14 @@ func (c *Client) AttachAudioNotifications(ctx context.Context, arm ble.Arm, noti
 					return
 				}
 				frame := AudioFrame{Arm: arm, Data: append([]byte(nil), data...)}
-				select {
-				case c.audioFrames <- frame:
-				default:
+				c.subscriberMu.Lock()
+				for _, frames := range c.audioSubscribers {
+					select {
+					case frames <- frame:
+					default:
+					}
 				}
+				c.subscriberMu.Unlock()
 			}
 		}
 	}()
@@ -48,7 +67,7 @@ func (c *Client) AttachAudioNotifications(ctx context.Context, arm ble.Arm, noti
 
 // StartMicrophone creates a startup page when needed and enables LC3 capture.
 func (c *Client) StartMicrophone(ctx context.Context) error {
-	if !c.audioAvailable {
+	if !c.audioAvailable.Load() {
 		return ErrAudioUnsupported
 	}
 	c.nativeMu.Lock()
@@ -65,7 +84,7 @@ func (c *Client) StartMicrophone(ctx context.Context) error {
 
 // StopMicrophone disables LC3 capture.
 func (c *Client) StopMicrophone(ctx context.Context) error {
-	if !c.audioAvailable {
+	if !c.audioAvailable.Load() {
 		return ErrAudioUnsupported
 	}
 	return c.sendAudioControl(ctx, false)

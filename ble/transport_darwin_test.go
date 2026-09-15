@@ -2,10 +2,7 @@
 
 package ble
 
-import (
-	"errors"
-	"testing"
-)
+import "testing"
 
 func TestSameUUID(t *testing.T) {
 	if !sameUUID("00002760-08c2-11e1-9073-0e8ac72e5401", writeUUID) {
@@ -13,20 +10,6 @@ func TestSameUUID(t *testing.T) {
 	}
 	if sameUUID(writeUUID, notifyUUID) {
 		t.Fatal("sameUUID() accepted different UUIDs")
-	}
-}
-
-func TestConnectionRequiresDiscoveredArm(t *testing.T) {
-	transport := &DarwinTransport{
-		discovered:  make(map[Arm]ScanResult),
-		connections: make(map[Arm]*armConnection),
-	}
-
-	if err := transport.Connect(t.Context(), Left); !errors.Is(err, ErrLeftArmNotFound) {
-		t.Fatalf("Connect(Left) error = %v, want ErrLeftArmNotFound", err)
-	}
-	if err := transport.Connect(t.Context(), Right); !errors.Is(err, ErrRightArmNotFound) {
-		t.Fatalf("Connect(Right) error = %v, want ErrRightArmNotFound", err)
 	}
 }
 

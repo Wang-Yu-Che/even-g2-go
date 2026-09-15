@@ -27,6 +27,10 @@ macOS → BLE → G2
 - local HTTP `/status`, `/text`, and `/image` bridge
 - G2 microphone control and raw LC3 packet capture
 - capture-confirmed AA 12 application packet codec and service identification
+- G2 settings query: battery, charging, per-arm firmware, brightness, head-up,
+  wearing detection, and screen position
+- brightness, automatic brightness, head-up angle, and screen-position controls
+- stock dashboard release plus experimental widget order and Schedule injection
 
 ## Reference
 
@@ -49,10 +53,41 @@ if err := client.ShowText(ctx, "hud", "Hello G2"); err != nil {
 }
 ```
 
+`Connect` succeeds only when discovery finds exactly one left and one right G2
+arm. Applications that support multiple nearby glasses should scan the arm
+candidates, let the user select a verified pair, and connect explicitly:
+
+```go
+arms, err := g2.ScanArms(ctx, g2.ScanOptions{Timeout: 10 * time.Second})
+if err != nil {
+	return err
+}
+device, err := g2.NewDevice(arms[ble.Left][0], arms[ble.Right][0])
+if err != nil {
+	return err
+}
+client, err := g2.ConnectDevice(ctx, device, g2.ConnectOptions{})
+```
+
+Runtime state and input events use independent subscriptions:
+
+```go
+statuses := client.SubscribeStatus(ctx)
+events := client.SubscribeEvents(ctx)
+```
+
+`Disconnect` releases the current BLE connections while retaining the selected
+device for `Reconnect`. `Close` permanently stops the client session.
+
 ## Run
 
 ```bash
 go run ./cmd/g2 scan
+go run ./cmd/g2 settings --debug
+go run ./cmd/g2 brightness --level 60 --auto
+go run ./cmd/g2 head-up --enabled=true --angle 30
+go run ./cmd/g2 screen-position --height 4 --depth 1
+go run ./cmd/g2 dashboard
 go run ./cmd/g2 hello --debug
 go run ./cmd/g2 text --debug "hello world"
 go run ./cmd/g2 native-text --debug "full lens text"
