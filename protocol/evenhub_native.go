@@ -9,6 +9,11 @@ type EvenHubGeometry struct {
 	X, Y, Width, Height int
 }
 
+// EvenHubTextStyle contains the verified text-container presentation fields.
+type EvenHubTextStyle struct {
+	BorderWidth, BorderColor, BorderRadius, PaddingLength int
+}
+
 var EvenHubFullLens = EvenHubGeometry{Width: 576, Height: 288}
 
 func BuildEvenHubCreateList(name string, rows []string, magic int) ([]byte, error) {
@@ -36,7 +41,13 @@ func BuildEvenHubRebuildList(name string, rows []string, magic int) ([]byte, err
 }
 
 func BuildEvenHubRebuildText(name, content string, magic int) ([]byte, error) {
-	object, err := evenHubTextObject(1, name, content, true, EvenHubFullLens)
+	return BuildEvenHubRebuildStyledText(name, content, magic, EvenHubFullLens, EvenHubTextStyle{})
+}
+
+// BuildEvenHubRebuildStyledText rebuilds a text container with geometry and
+// border fields matching the native G2 container schema.
+func BuildEvenHubRebuildStyledText(name, content string, magic int, geometry EvenHubGeometry, style EvenHubTextStyle) ([]byte, error) {
+	object, err := evenHubTextObject(1, name, content, true, geometry, style)
 	if err != nil {
 		return nil, err
 	}
@@ -132,11 +143,19 @@ func evenHubListObject(id int, name string, rows []string, capture, selectBorder
 	return object, nil
 }
 
-func evenHubTextObject(id int, name, content string, capture bool, geometry EvenHubGeometry) ([]byte, error) {
+func evenHubTextObject(id int, name, content string, capture bool, geometry EvenHubGeometry, style EvenHubTextStyle) ([]byte, error) {
 	if err := validateEvenHubName(name); err != nil {
 		return nil, err
 	}
+	if style.BorderWidth < 0 || style.BorderWidth > 5 || style.BorderColor < 0 || style.BorderColor > 15 ||
+		style.BorderRadius < 0 || style.BorderRadius > 10 || style.PaddingLength < 0 || style.PaddingLength > 32 {
+		return nil, fmt.Errorf("invalid EvenHub text style: %+v", style)
+	}
 	object := evenHubGeometryFields(geometry)
+	object = append(object, protoUint(5, style.BorderWidth)...)
+	object = append(object, protoUint(6, style.BorderColor)...)
+	object = append(object, protoUint(7, style.BorderRadius)...)
+	object = append(object, protoUint(8, style.PaddingLength)...)
 	object = append(object, protoUint(9, id)...)
 	object = append(object, protoString(10, name)...)
 	if capture {

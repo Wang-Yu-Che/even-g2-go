@@ -26,6 +26,7 @@ macOS → BLE → G2
 - high-level connect, state reporting, and automatic reconnect
 - local HTTP `/status`, `/text`, and `/image` bridge
 - G2 microphone control and raw LC3 packet capture
+- capture-confirmed AA 12 application packet codec and service identification
 
 ## Reference
 
@@ -61,6 +62,7 @@ go run ./cmd/g2 mic --output ./capture.lc3
 go run ./cmd/g2 mic --lc3-output ./frames.lc3
 go run ./cmd/g2 mic --wav-output ./capture.wav
 go run ./cmd/g2 decode-lc3 ./frames.lc3 ./capture.wav
+go run ./cmd/g2 decode-packet 'AA 12 ...'
 go run ./cmd/g2 serve --addr :8080
 ```
 

@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/hex"
 	"errors"
 	"flag"
 	"fmt"
@@ -35,7 +36,7 @@ func main() {
 
 func run(args []string) error {
 	if len(args) == 0 {
-		return errors.New("usage: g2 <scan|connect|auth|hello|text|native-text|list|image|mic|decode-lc3|serve>")
+		return errors.New("usage: g2 <scan|connect|auth|hello|text|native-text|list|image|mic|decode-lc3|decode-packet|serve>")
 	}
 
 	switch args[0] {
@@ -61,8 +62,43 @@ func run(args []string) error {
 		return runMic(args[1:])
 	case "decode-lc3":
 		return runDecodeLC3(args[1:])
+	case "decode-packet":
+		return runDecodePacket(args[1:])
 	default:
-		return fmt.Errorf("unknown command %q; usage: g2 <scan|connect|auth|hello|text|native-text|list|image|mic|decode-lc3|serve>", args[0])
+		return fmt.Errorf("unknown command %q; usage: g2 <scan|connect|auth|hello|text|native-text|list|image|mic|decode-lc3|decode-packet|serve>", args[0])
+	}
+}
+
+func runDecodePacket(args []string) error {
+	if len(args) != 1 {
+		return errors.New("usage: g2 decode-packet <hex>")
+	}
+	data, err := hex.DecodeString(strings.NewReplacer(" ", "", ":", "", "-", "").Replace(args[0]))
+	if err != nil {
+		return fmt.Errorf("decode packet hex: %w", err)
+	}
+	if len(data) < 2 {
+		return protocol.ErrPacketTooShort
+	}
+	switch data[1] {
+	case protocol.ApplicationPacketVersion:
+		packet, err := protocol.ParseApplicationPacket(data)
+		if err != nil {
+			return err
+		}
+		fmt.Printf("version=AA12 sequence=%d service=0x%04X (%s) payload=%X\n",
+			packet.Sequence, packet.ServiceID, protocol.ApplicationServiceName(packet.ServiceID), packet.Payload)
+		return nil
+	case protocol.PacketMagic1:
+		packet, err := protocol.ParsePacket(data)
+		if err != nil {
+			return err
+		}
+		fmt.Printf("version=AA21 sequence=%d service=%02X%02X payload=%X\n",
+			packet.Sequence, packet.ServiceHi, packet.ServiceLo, packet.Payload)
+		return nil
+	default:
+		return fmt.Errorf("unsupported packet version 0x%02X", data[1])
 	}
 }
 

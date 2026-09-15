@@ -13,6 +13,12 @@ var ErrEvenHubRejected = errors.New("EvenHub command rejected")
 
 type nativeShape int
 
+// TextStyle controls the native text container used by ShowTextWithStyle.
+type TextStyle struct {
+	X, Y, Width, Height                                   int
+	BorderWidth, BorderColor, BorderRadius, PaddingLength int
+}
+
 const (
 	nativeShapeNone nativeShape = iota
 	nativeShapeList
@@ -44,6 +50,29 @@ func (c *Client) ShowText(ctx context.Context, name, content string) error {
 	c.nativeMu.Lock()
 	defer c.nativeMu.Unlock()
 	return c.showTextLocked(ctx, name, content)
+}
+
+// ShowTextWithStyle switches to a positioned native text container with a
+// border, rounded corners and padding.
+func (c *Client) ShowTextWithStyle(ctx context.Context, name, content string, style TextStyle) error {
+	c.nativeMu.Lock()
+	defer c.nativeMu.Unlock()
+	if err := c.prepareNative(ctx); err != nil {
+		return err
+	}
+	magic := c.nextEvenHubMagic()
+	payload, err := protocol.BuildEvenHubRebuildStyledText(name, content, magic,
+		protocol.EvenHubGeometry{X: style.X, Y: style.Y, Width: style.Width, Height: style.Height},
+		protocol.EvenHubTextStyle{BorderWidth: style.BorderWidth, BorderColor: style.BorderColor, BorderRadius: style.BorderRadius, PaddingLength: style.PaddingLength})
+	if err != nil {
+		return err
+	}
+	if err := c.sendNativeCommand(ctx, payload, magic); err != nil {
+		return err
+	}
+	c.nativeShape = nativeShapeText
+	c.startHeartbeat(ctx)
+	return nil
 }
 
 // UpdateText replaces text in place, or creates the text shape when necessary.

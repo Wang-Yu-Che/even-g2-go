@@ -33,6 +33,29 @@ func TestShowTextPrimesAndRebuildsNativePage(t *testing.T) {
 	}
 }
 
+func TestShowTextWithStylePrimesAndRebuildsNativePage(t *testing.T) {
+	transport := &recordingTransport{}
+	client := testClient(transport)
+	client.setState(Ready)
+
+	go func() {
+		waitForWrites(t, transport, 2)
+		client.HandleNotification(ble.Right, protocol.BuildPacket(1, protocol.EvenHubServiceID, protocol.EvenHubRequest,
+			[]byte{0x08, 0x01, 0x10, 0xC9, 0x01, 0x1A, 0x00}))
+		waitForWrites(t, transport, 3)
+		client.HandleNotification(ble.Right, protocol.BuildPacket(2, protocol.EvenHubServiceID, protocol.EvenHubRequest,
+			[]byte{0x08, 0x08, 0x10, 0x01, 0x1A, 0x02, 0x08, 0x06}))
+	}()
+
+	style := TextStyle{X: 20, Y: 20, Width: 536, Height: 248, BorderWidth: 2, BorderColor: 15, BorderRadius: 8, PaddingLength: 12}
+	if err := client.ShowTextWithStyle(t.Context(), "notice", "$ Codex\n> testing", style); err != nil {
+		t.Fatalf("ShowTextWithStyle() error = %v", err)
+	}
+	if client.nativeShape != nativeShapeText || !client.nativeCreated {
+		t.Fatalf("native state = shape %d, created %v", client.nativeShape, client.nativeCreated)
+	}
+}
+
 func TestSystemExitClearsNativePage(t *testing.T) {
 	client := testClient(&recordingTransport{})
 	client.nativeCreated = true

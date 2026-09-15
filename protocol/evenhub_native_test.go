@@ -36,6 +36,28 @@ func TestEvenHubContainerNameLimitUsesUTF8Bytes(t *testing.T) {
 	}
 }
 
+func TestBuildEvenHubRebuildStyledText(t *testing.T) {
+	payload, err := BuildEvenHubRebuildStyledText("notice", "hello", 9,
+		EvenHubGeometry{X: 20, Y: 20, Width: 536, Height: 248},
+		EvenHubTextStyle{BorderWidth: 2, BorderColor: 15, BorderRadius: 8, PaddingLength: 12})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Text object fields 5-8: border width, colour, radius and padding.
+	for _, field := range [][]byte{{0x28, 0x02}, {0x30, 0x0F}, {0x38, 0x08}, {0x40, 0x0C}} {
+		if !bytes.Contains(payload, field) {
+			t.Fatalf("payload % X does not contain style field % X", payload, field)
+		}
+	}
+}
+
+func TestBuildEvenHubRebuildStyledTextRejectsInvalidStyle(t *testing.T) {
+	_, err := BuildEvenHubRebuildStyledText("notice", "hello", 9, EvenHubFullLens, EvenHubTextStyle{BorderWidth: 6})
+	if err == nil {
+		t.Fatal("expected invalid border width to fail")
+	}
+}
+
 func TestBuildEvenHubImageMessages(t *testing.T) {
 	tiles := []ImageTile{{ID: 10, Name: "t0", X: 0, Y: 0}, {ID: 11, Name: "t1", X: 288, Y: 0}}
 	create, err := BuildEvenHubCreateImages(tiles, 201)
