@@ -42,7 +42,7 @@ func BuildEvenHubRebuildList(name string, rows []string, magic int) ([]byte, err
 	}
 	rebuild := protoUint(1, 1)
 	rebuild = append(rebuild, protoMessage(2, object)...)
-	payload := protoUint(1, 7)
+	payload := protoUint(1, EvenHubCommandRebuildPage)
 	payload = append(payload, protoUint(2, magic)...)
 	return append(payload, protoMessage(7, rebuild)...), nil
 }
@@ -60,7 +60,7 @@ func BuildEvenHubRebuildStyledText(name, content string, magic int, geometry Eve
 	}
 	rebuild := protoUint(1, 1)
 	rebuild = append(rebuild, protoMessage(3, object)...)
-	payload := protoUint(1, 7)
+	payload := protoUint(1, EvenHubCommandRebuildPage)
 	payload = append(payload, protoUint(2, magic)...)
 	return append(payload, protoMessage(7, rebuild)...), nil
 }
@@ -77,7 +77,7 @@ func BuildEvenHubTextUpgrade(name, content string, magic int) ([]byte, error) {
 	upgrade = append(upgrade, protoString(2, name)...)
 	upgrade = append(upgrade, protoUint(4, len(data))...)
 	upgrade = append(upgrade, protoBytes(5, data)...)
-	payload := protoUint(1, 5)
+	payload := protoUint(1, EvenHubCommandUpdateText)
 	payload = append(payload, protoUint(2, magic)...)
 	return append(payload, protoMessage(9, upgrade)...), nil
 }
@@ -137,7 +137,7 @@ func BuildEvenHubRebuildTextImages(textName, content string, textGeometry EvenHu
 	for _, imageObject := range imageObjects {
 		rebuild = append(rebuild, protoMessage(4, imageObject)...)
 	}
-	payload := protoUint(1, 7)
+	payload := protoUint(1, EvenHubCommandRebuildPage)
 	payload = append(payload, protoUint(2, magic)...)
 	return append(payload, protoMessage(7, rebuild)...), nil
 }
@@ -181,14 +181,14 @@ func BuildEvenHubImageFragment(containerID int, name string, sessionID, totalSiz
 	imageData = append(imageData, protoUint(6, fragmentIndex)...)
 	imageData = append(imageData, protoUint(7, len(data))...)
 	imageData = append(imageData, protoBytes(8, data)...)
-	payload := protoUint(1, 3)
+	payload := protoUint(1, EvenHubCommandUpdateImage)
 	payload = append(payload, protoUint(2, magic)...)
 	return append(payload, protoMessage(5, imageData)...), nil
 }
 
 // BuildEvenHubShutdown builds Cmd=9 for the active page.
 func BuildEvenHubShutdown(magic int) []byte {
-	payload := protoUint(1, 9)
+	payload := protoUint(1, EvenHubCommandShutdownPage)
 	payload = append(payload, protoUint(2, magic)...)
 	return append(payload, protoMessage(11, nil)...)
 }

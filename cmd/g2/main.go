@@ -502,9 +502,9 @@ func runNative(args []string, list bool) error {
 		case err := <-client.Errors():
 			return err
 		case event := <-events:
-			fmt.Printf("[EVENT] kind=%s name=%q item=%q index=%d type=%s(%d) data=%d\n",
+			fmt.Printf("[EVENT] kind=%s name=%q item=%q index=%d type=%s(%d) source=%d data=%d\n",
 				event.Kind, event.Name, event.ItemName, event.ItemIndex,
-				protocol.EvenHubEventTypeName(event.Type), event.Type, event.EventData)
+				protocol.EvenHubEventTypeName(event.Type), event.Type, event.Source, event.EventData)
 			if list {
 				if err := navigation.handle(ctx, client, event, time.Now()); err != nil {
 					return err

@@ -45,7 +45,7 @@ func BuildEvenHubAudioControl(enabled bool, magic int) []byte {
 	if enabled {
 		action = 1
 	}
-	payload := protoUint(1, 15)
+	payload := protoUint(1, EvenHubCommandAudioControl)
 	payload = append(payload, protoUint(2, magic)...)
 	return append(payload, protoMessage(18, protoUint(1, action))...)
 }

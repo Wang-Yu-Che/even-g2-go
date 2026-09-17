@@ -1,13 +1,27 @@
 package protocol
 
 import (
+	"encoding/binary"
 	"errors"
 	"fmt"
+	"math"
 )
 
 const (
-	EvenHubServiceID = 0xE0
-	EvenHubRequest   = 0x20
+	EvenHubControlServiceID = 0x81
+	EvenHubServiceID        = 0xE0
+	EvenHubRequest          = 0x20
+)
+
+const (
+	EvenHubCommandCreateStartupPage = 0
+	EvenHubCommandUpdateImage       = 3
+	EvenHubCommandUpdateText        = 5
+	EvenHubCommandRebuildPage       = 7
+	EvenHubCommandShutdownPage      = 9
+	EvenHubCommandHeartbeat         = 12
+	EvenHubCommandAudioControl      = 15
+	EvenHubCommandIMUControl        = 19
 )
 
 var ErrInvalidProtobuf = errors.New("invalid protobuf payload")
@@ -35,6 +49,7 @@ const (
 	EvenHubEventText
 	EvenHubEventSystem
 	EvenHubEventPrivate
+	EvenHubEventMenu
 )
 
 func (kind EvenHubEventKind) String() string {
@@ -47,6 +62,8 @@ func (kind EvenHubEventKind) String() string {
 		return "system"
 	case EvenHubEventPrivate:
 		return "private"
+	case EvenHubEventMenu:
+		return "menu"
 	default:
 		return "other"
 	}
@@ -61,6 +78,14 @@ const (
 	EvenHubEventForegroundExit  = 5
 	EvenHubEventAbnormalExit    = 6
 	EvenHubEventSystemExit      = 7
+	EvenHubEventIMUDataReport   = 8
+)
+
+const (
+	EvenHubEventSourceUnknown      = 0
+	EvenHubEventSourceGlassesRight = 1
+	EvenHubEventSourceRing         = 2
+	EvenHubEventSourceGlassesLeft  = 3
 )
 
 // EvenHubEventTypeName returns the protocol name of an event type.
@@ -82,26 +107,34 @@ func EvenHubEventTypeName(eventType int) string {
 		return "abnormal-exit"
 	case EvenHubEventSystemExit:
 		return "system-exit"
+	case EvenHubEventIMUDataReport:
+		return "imu-data-report"
 	default:
 		return fmt.Sprintf("unknown(%d)", eventType)
 	}
 }
 
-// EvenHubEvent is the normalized form of list, text, system, and private events.
+// EvenHubEvent is the normalized form of container, system, private, and menu events.
 type EvenHubEvent struct {
-	Kind       EvenHubEventKind
-	Name       string
-	ItemName   string
-	ItemIndex  int
-	Type       int
-	ExitReason int
-	EventID    int
-	EventData  int
+	Kind        EvenHubEventKind
+	Name        string
+	ItemName    string
+	ItemIndex   int
+	Type        int
+	Source      int
+	ExitReason  int
+	EventID     int
+	EventData   int
+	AppID       int
+	PackageName string
+	IMUX        float32
+	IMUY        float32
+	IMUZ        float32
 }
 
 // BuildEvenHubHeartbeat builds Cmd=12 HeartBeatPacket{Cnt:0}.
 func BuildEvenHubHeartbeat(magic int) []byte {
-	payload := protoUint(1, 12)
+	payload := protoUint(1, EvenHubCommandHeartbeat)
 	payload = append(payload, protoUint(2, magic)...)
 	return append(payload, protoMessage(14, nil)...)
 }
@@ -159,7 +192,7 @@ func ParseEvenHubResponse(payload []byte) (EvenHubResponse, error) {
 // ParseEvenHubEvent decodes Cmd=2 device events and Cmd=11 private events.
 func ParseEvenHubEvent(payload []byte) (EvenHubEvent, error) {
 	command := -1
-	var device, private []byte
+	var device, private, menu []byte
 	err := walkProto(payload, func(field, wire int, value uint64, data []byte) error {
 		if wire == 0 && field == 1 {
 			command = int(value)
@@ -169,6 +202,9 @@ func ParseEvenHubEvent(payload []byte) (EvenHubEvent, error) {
 		}
 		if wire == 2 && field == 16 {
 			private = data
+		}
+		if wire == 2 && field == 20 {
+			menu = data
 		}
 		return nil
 	})
@@ -181,7 +217,21 @@ func ParseEvenHubEvent(payload []byte) (EvenHubEvent, error) {
 	if command == 11 && private != nil {
 		return parsePrivateEvent(private)
 	}
+	if command == 17 && menu != nil {
+		return parseMenuEvent(menu)
+	}
 	return EvenHubEvent{Kind: EvenHubEventOther}, nil
+}
+
+func parseMenuEvent(payload []byte) (EvenHubEvent, error) {
+	event := EvenHubEvent{Kind: EvenHubEventMenu}
+	err := walkProto(payload, func(field, wire int, value uint64, _ []byte) error {
+		if wire == 0 && field == 1 {
+			event.AppID = int(value)
+		}
+		return nil
+	})
+	return event, err
 }
 
 func parseDeviceEvent(payload []byte) (EvenHubEvent, error) {
@@ -228,12 +278,45 @@ func parseEventFields(event *EvenHubEvent, payload []byte) error {
 		case EvenHubEventSystem:
 			if wire == 0 && field == 1 {
 				event.Type = int(value)
+			} else if wire == 0 && field == 2 {
+				event.Source = int(value)
 			} else if wire == 0 && field == 4 {
 				event.ExitReason = int(value)
+			} else if wire == 2 && field == 3 {
+				return parseIMUData(event, data)
 			}
 		}
 		return nil
 	})
+}
+
+func parseIMUData(event *EvenHubEvent, payload []byte) error {
+	return walkProto(payload, func(field, wire int, value uint64, _ []byte) error {
+		if wire != 5 {
+			return nil
+		}
+		axis := math.Float32frombits(uint32(value))
+		switch field {
+		case 1:
+			event.IMUX = axis
+		case 2:
+			event.IMUY = axis
+		case 3:
+			event.IMUZ = axis
+		}
+		return nil
+	})
+}
+
+// BuildEvenHubIMUControl builds Cmd=19 ImuCtrlCmd.
+func BuildEvenHubIMUControl(enabled bool, reportFrequency, magic int) []byte {
+	control := protoUintPresent(1, boolInt(enabled))
+	if enabled {
+		control = append(control, protoUint(2, reportFrequency)...)
+	}
+	payload := protoUint(1, EvenHubCommandIMUControl)
+	payload = append(payload, protoUint(2, magic)...)
+	return append(payload, protoMessage(20, control)...)
 }
 
 func parsePrivateEvent(payload []byte) (EvenHubEvent, error) {
@@ -279,6 +362,15 @@ func walkProto(payload []byte, visit func(field, wire int, value uint64, data []
 			if err := visit(field, wire, 0, payload[start:offset]); err != nil {
 				return err
 			}
+		case 5:
+			if len(payload)-offset < 4 {
+				return ErrInvalidProtobuf
+			}
+			value := binary.LittleEndian.Uint32(payload[offset : offset+4])
+			offset += 4
+			if err := visit(field, wire, uint64(value), nil); err != nil {
+				return err
+			}
 		default:
 			return ErrInvalidProtobuf
 		}
@@ -303,6 +395,11 @@ func protoUint(field, value int) []byte {
 	if value == 0 {
 		return nil
 	}
+	encoded := EncodeVarint(uint64(field << 3))
+	return append(encoded, EncodeVarint(uint64(value))...)
+}
+
+func protoUintPresent(field, value int) []byte {
 	encoded := EncodeVarint(uint64(field << 3))
 	return append(encoded, EncodeVarint(uint64(value))...)
 }

@@ -26,3 +26,9 @@ type Transport interface {
 type AudioTransport interface {
 	SubscribeAudio(ctx context.Context, arm Arm) (<-chan []byte, error)
 }
+
+// FileTransport exposes the G2 file-service characteristic used by native notifications.
+type FileTransport interface {
+	WriteFile(ctx context.Context, arm Arm, data []byte) error
+	SubscribeFile(ctx context.Context, arm Arm) (<-chan []byte, error)
+}

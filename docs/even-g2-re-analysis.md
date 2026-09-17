@@ -30,7 +30,7 @@ protobuf schema。
 
 - Dashboard 原始图片渲染 `cmdId=7/8/9`：页面关联和图片包装仍缺少足够黄金样本。
 - Even RLE：仓库只确认相关符号存在，未给出经过样本验证的编码算法。
-- OTA、文件服务和 Ring relay：目前主要是类名、命令名和流程描述，缺少可验证 payload。
+- OTA 仍缺少可验证 payload；文件服务和 Ring relay 已按 MentraOS 的验证实现接入。
 - `6401/6402`、`7401/7402` 通用通道 API：`psType` 路由已由 Android DEX 确认，但不同
   功能与通道的稳定映射尚不完整；当前继续仅按已验证用途使用 `5401/5402` 和麦克风
   `6402`。

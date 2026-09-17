@@ -45,6 +45,7 @@ func (c *Client) DisplayList(ctx context.Context, name string, rows []string) er
 	if err != nil {
 		return err
 	}
+	payload = c.associateActiveMenuApp(payload)
 	if err := c.sendNativeCommand(ctx, payload, magic); err != nil {
 		return err
 	}
@@ -75,6 +76,7 @@ func (c *Client) ShowTextWithStyle(ctx context.Context, name, content string, st
 	if err != nil {
 		return err
 	}
+	payload = c.associateActiveMenuApp(payload)
 	if err := c.sendNativeCommand(ctx, payload, magic); err != nil {
 		return err
 	}
@@ -119,6 +121,7 @@ func (c *Client) ShowTextWithIcons(ctx context.Context, name, content string, st
 		if err != nil {
 			return err
 		}
+		payload = c.associateActiveMenuApp(payload)
 		if err := c.sendNativeCommand(ctx, payload, magic); err != nil {
 			return err
 		}
@@ -261,6 +264,7 @@ func (c *Client) showTextPrepared(ctx context.Context, name, content string) err
 	if err != nil {
 		return err
 	}
+	payload = c.associateActiveMenuApp(payload)
 	if err := c.sendNativeCommand(ctx, payload, magic); err != nil {
 		return err
 	}

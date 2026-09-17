@@ -32,26 +32,28 @@ type Client struct {
 	packetGap      time.Duration
 	authWait       time.Duration
 
-	heartbeatMu       sync.Mutex
-	heartbeatCancel   context.CancelFunc
-	heartbeatWG       sync.WaitGroup
-	heartbeatInterval time.Duration
-	heartbeatSequence byte
-	lifecycleStop     func() bool
-	errors            chan error
-	eventSubscribers  map[uint64]chan protocol.EvenHubEvent
-	nextSubscriberID  uint64
-	statusSubscribers map[uint64]chan Status
-	subscriberMu      sync.Mutex
-	notificationMu    sync.Mutex
-	notificationStops []context.CancelFunc
-	notificationWG    sync.WaitGroup
-	disconnects       chan struct{}
-	audioSubscribers  map[uint64]chan AudioFrame
-	audioAvailable    atomic.Bool
-	reconnectMu       sync.Mutex
-	reconnectCancel   context.CancelFunc
-	reconnectWG       sync.WaitGroup
+	heartbeatMu             sync.Mutex
+	heartbeatCancel         context.CancelFunc
+	heartbeatWG             sync.WaitGroup
+	heartbeatInterval       time.Duration
+	heartbeatSequence       byte
+	lifecycleStop           func() bool
+	errors                  chan error
+	eventSubscribers        map[uint64]chan protocol.EvenHubEvent
+	navigationSubscribers   map[uint64]chan protocol.NavigationEvent
+	notificationSubscribers map[uint64]chan protocol.NotificationResponse
+	nextSubscriberID        uint64
+	statusSubscribers       map[uint64]chan Status
+	subscriberMu            sync.Mutex
+	notificationMu          sync.Mutex
+	notificationStops       []context.CancelFunc
+	notificationWG          sync.WaitGroup
+	disconnects             chan struct{}
+	audioSubscribers        map[uint64]chan AudioFrame
+	audioAvailable          atomic.Bool
+	reconnectMu             sync.Mutex
+	reconnectCancel         context.CancelFunc
+	reconnectWG             sync.WaitGroup
 
 	evenHubMu        sync.Mutex
 	evenHubWriteMu   sync.Mutex
@@ -71,14 +73,20 @@ type Client struct {
 	nativeCreateDelay  time.Duration
 	evenHubAckTimeout  time.Duration
 
-	eventHandlerMu sync.Mutex
-	eventHandlers  map[uint64]EventHandler
-	nextHandlerID  uint64
-	lastTapAt      time.Time
-	lastBackAt     time.Time
-	settingsMu     sync.RWMutex
-	settings       DeviceSettings
-	settingsKnown  atomic.Bool
+	eventHandlerMu  sync.Mutex
+	eventHandlers   map[uint64]EventHandler
+	nextHandlerID   uint64
+	lastTapAt       time.Time
+	lastBackAt      time.Time
+	menuMu          sync.RWMutex
+	menuItems       []protocol.MenuItem
+	menuAppIDs      map[int]string
+	activeMenuAppID int
+	lastMenuAppID   int
+	lastMenuAt      time.Time
+	settingsMu      sync.RWMutex
+	settings        DeviceSettings
+	settingsKnown   atomic.Bool
 
 	imageMu          sync.Mutex
 	imagePrimed      bool
@@ -97,6 +105,17 @@ type Client struct {
 	displayMarkerDelay     time.Duration
 	displayLatePageDelay   time.Duration
 	displaySyncDelay       time.Duration
+
+	fileMu               sync.Mutex
+	fileStateMu          sync.Mutex
+	filePendingCommand   int
+	filePendingAck       chan fileReply
+	fileNeedsReconnect   bool
+	fileTimeout          time.Duration
+	notificationConfigMu sync.Mutex
+	notificationConfig   *protocol.NotificationConfig
+	notificationIDs      map[string]int
+	nextNotificationID   int
 }
 
 // NewClient creates a dual-arm G2 client.
@@ -105,38 +124,45 @@ func NewClient(transport ble.Transport, debug bool, output io.Writer) *Client {
 		output = io.Discard
 	}
 	return &Client{
-		Left:                   &Connection{},
-		Right:                  &Connection{},
-		transport:              transport,
-		debug:                  debug,
-		output:                 output,
-		now:                    time.Now,
-		leftToRightGap:         18 * time.Millisecond,
-		afterRightGap:          12 * time.Millisecond,
-		packetGap:              100 * time.Millisecond,
-		authWait:               500 * time.Millisecond,
-		heartbeatInterval:      1500 * time.Millisecond,
-		heartbeatSequence:      0xC0,
-		errors:                 make(chan error, 1),
-		eventSubscribers:       make(map[uint64]chan protocol.EvenHubEvent),
-		statusSubscribers:      make(map[uint64]chan Status),
-		eventHandlers:          make(map[uint64]EventHandler),
-		disconnects:            make(chan struct{}, 1),
-		audioSubscribers:       make(map[uint64]chan AudioFrame),
-		evenHubMagic:           1,
-		evenHubChunkSize:       180,
-		pendingAcks:            make(map[int]chan evenHubAck),
-		pendingSettings:        make(map[int]chan settingsReply),
-		nativePreludeDelay:     500 * time.Millisecond,
-		nativeCreateDelay:      200 * time.Millisecond,
-		evenHubAckTimeout:      3 * time.Second,
-		displayRefreshInterval: 11 * time.Second,
-		displayConfigDelay:     150 * time.Millisecond,
-		displayInitDelay:       300 * time.Millisecond,
-		displayFirstPageDelay:  45 * time.Millisecond,
-		displayMarkerDelay:     45 * time.Millisecond,
-		displayLatePageDelay:   100 * time.Millisecond,
-		displaySyncDelay:       45 * time.Millisecond,
+		Left:                    &Connection{},
+		Right:                   &Connection{},
+		transport:               transport,
+		debug:                   debug,
+		output:                  output,
+		now:                     time.Now,
+		leftToRightGap:          18 * time.Millisecond,
+		afterRightGap:           12 * time.Millisecond,
+		packetGap:               100 * time.Millisecond,
+		authWait:                500 * time.Millisecond,
+		heartbeatInterval:       1500 * time.Millisecond,
+		heartbeatSequence:       0xC0,
+		errors:                  make(chan error, 1),
+		eventSubscribers:        make(map[uint64]chan protocol.EvenHubEvent),
+		navigationSubscribers:   make(map[uint64]chan protocol.NavigationEvent),
+		notificationSubscribers: make(map[uint64]chan protocol.NotificationResponse),
+		statusSubscribers:       make(map[uint64]chan Status),
+		eventHandlers:           make(map[uint64]EventHandler),
+		menuAppIDs:              make(map[int]string),
+		disconnects:             make(chan struct{}, 1),
+		audioSubscribers:        make(map[uint64]chan AudioFrame),
+		evenHubMagic:            1,
+		evenHubChunkSize:        180,
+		pendingAcks:             make(map[int]chan evenHubAck),
+		pendingSettings:         make(map[int]chan settingsReply),
+		nativePreludeDelay:      500 * time.Millisecond,
+		nativeCreateDelay:       200 * time.Millisecond,
+		evenHubAckTimeout:       3 * time.Second,
+		displayRefreshInterval:  11 * time.Second,
+		displayConfigDelay:      150 * time.Millisecond,
+		displayInitDelay:        300 * time.Millisecond,
+		displayFirstPageDelay:   45 * time.Millisecond,
+		displayMarkerDelay:      45 * time.Millisecond,
+		displayLatePageDelay:    100 * time.Millisecond,
+		displaySyncDelay:        45 * time.Millisecond,
+		filePendingCommand:      -1,
+		fileTimeout:             15 * time.Second,
+		notificationIDs:         make(map[string]int),
+		nextNotificationID:      2000,
 	}
 }
 
@@ -165,6 +191,12 @@ func (c *Client) Authenticate(ctx context.Context) error {
 
 	c.setState(Ready)
 	c.log("[AUTH] complete\n")
+	if err := c.restoreMenu(ctx); err != nil {
+		return c.authenticationFailure(err)
+	}
+	if err := c.restoreNotifications(ctx); err != nil {
+		return c.authenticationFailure(err)
+	}
 	c.startHeartbeat(ctx)
 	return nil
 }

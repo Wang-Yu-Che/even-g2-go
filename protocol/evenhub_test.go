@@ -50,8 +50,9 @@ func TestParseEvenHubEvents(t *testing.T) {
 	}{
 		{"list", []byte{0x08, 0x02, 0x6A, 0x0D, 0x0A, 0x0B, 0x12, 0x03, 'h', 'u', 'd', 0x1A, 0x02, 'o', 'k', 0x20, 0x02}, EvenHubEvent{Kind: EvenHubEventList, Name: "hud", ItemName: "ok", ItemIndex: 2}},
 		{"text", []byte{0x08, 0x02, 0x6A, 0x09, 0x12, 0x07, 0x12, 0x03, 'h', 'u', 'd', 0x18, 0x03}, EvenHubEvent{Kind: EvenHubEventText, Name: "hud", Type: 3}},
-		{"system", []byte{0x08, 0x02, 0x6A, 0x06, 0x1A, 0x04, 0x08, 0x07, 0x20, 0x02}, EvenHubEvent{Kind: EvenHubEventSystem, Type: 7, ExitReason: 2}},
+		{"system", []byte{0x08, 0x02, 0x6A, 0x08, 0x1A, 0x06, 0x08, 0x07, 0x10, 0x03, 0x20, 0x02}, EvenHubEvent{Kind: EvenHubEventSystem, Type: 7, Source: EvenHubEventSourceGlassesLeft, ExitReason: 2}},
 		{"private", []byte{0x08, 0x0B, 0x82, 0x01, 0x09, 0x12, 0x03, 'h', 'u', 'd', 0x18, 0x09, 0x20, 0x02}, EvenHubEvent{Kind: EvenHubEventPrivate, Name: "hud", EventID: 9, EventData: 2}},
+		{"menu", []byte{0x08, 0x11, 0xA2, 0x01, 0x03, 0x08, 0xAD, 0x4E}, EvenHubEvent{Kind: EvenHubEventMenu, AppID: 10029}},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
@@ -81,5 +82,8 @@ func TestEvenHubEventNames(t *testing.T) {
 	}
 	if got := EvenHubEventTypeName(99); got != "unknown(99)" {
 		t.Fatalf("unknown event type name = %q", got)
+	}
+	if EvenHubControlServiceID != 0x81 || EvenHubServiceID != 0xE0 {
+		t.Fatalf("EvenHub service IDs = %02X/%02X", EvenHubControlServiceID, EvenHubServiceID)
 	}
 }

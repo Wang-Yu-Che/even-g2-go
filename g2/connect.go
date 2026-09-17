@@ -135,6 +135,13 @@ func (c *Client) attachTransportNotifications(ctx context.Context) error {
 			c.AttachAudioNotifications(ctx, arm, notifications)
 		}
 	}
+	if fileTransport, ok := c.transport.(ble.FileTransport); ok {
+		notifications, err := fileTransport.SubscribeFile(ctx, ble.Right)
+		if err == nil {
+			c.resetFileService()
+			c.AttachFileNotifications(ctx, notifications)
+		}
+	}
 	c.publishStatus()
 	return nil
 }

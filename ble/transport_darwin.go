@@ -13,10 +13,12 @@ import (
 )
 
 const (
-	serviceUUID   = "6E400001-B5A3-F393-E0A9-E50E24DCCA9E"
-	writeUUID     = "00002760-08C2-11E1-9073-0E8AC72E5401"
-	notifyUUID    = "00002760-08C2-11E1-9073-0E8AC72E5402"
-	micNotifyUUID = "00002760-08C2-11E1-9073-0E8AC72E6402"
+	serviceUUID    = "6E400001-B5A3-F393-E0A9-E50E24DCCA9E"
+	writeUUID      = "00002760-08C2-11E1-9073-0E8AC72E5401"
+	notifyUUID     = "00002760-08C2-11E1-9073-0E8AC72E5402"
+	micNotifyUUID  = "00002760-08C2-11E1-9073-0E8AC72E6402"
+	fileWriteUUID  = "00002760-08C2-11E1-9073-0E8AC72E7401"
+	fileNotifyUUID = "00002760-08C2-11E1-9073-0E8AC72E7402"
 )
 
 // DarwinTransport implements Transport using CoreBluetooth through
@@ -32,16 +34,19 @@ type DarwinTransport struct {
 var _ Transport = (*DarwinTransport)(nil)
 
 type armConnection struct {
-	address   string
-	device    bluetooth.Device
-	write     bluetooth.DeviceCharacteristic
-	notify    bluetooth.DeviceCharacteristic
-	micNotify bluetooth.DeviceCharacteristic
+	address    string
+	device     bluetooth.Device
+	write      bluetooth.DeviceCharacteristic
+	notify     bluetooth.DeviceCharacteristic
+	micNotify  bluetooth.DeviceCharacteristic
+	fileWrite  bluetooth.DeviceCharacteristic
+	fileNotify bluetooth.DeviceCharacteristic
 
 	writeMu            sync.Mutex
 	notifyMu           sync.Mutex
 	notifications      chan []byte
 	audioNotifications chan []byte
+	fileNotifications  chan []byte
 	closed             bool
 	closeOnce          sync.Once
 }
@@ -120,6 +125,8 @@ func (t *DarwinTransport) Connect(ctx context.Context, arm Arm, result ScanResul
 	var write bluetooth.DeviceCharacteristic
 	var notify bluetooth.DeviceCharacteristic
 	var micNotify bluetooth.DeviceCharacteristic
+	var fileWrite bluetooth.DeviceCharacteristic
+	var fileNotify bluetooth.DeviceCharacteristic
 	serviceFound := false
 	for _, service := range services {
 		if sameUUID(service.UUID().String(), serviceUUID) {
@@ -137,6 +144,10 @@ func (t *DarwinTransport) Connect(ctx context.Context, arm Arm, result ScanResul
 				notify = characteristic
 			case sameUUID(characteristic.UUID().String(), micNotifyUUID):
 				micNotify = characteristic
+			case sameUUID(characteristic.UUID().String(), fileWriteUUID):
+				fileWrite = characteristic
+			case sameUUID(characteristic.UUID().String(), fileNotifyUUID):
+				fileNotify = characteristic
 			}
 		}
 	}
@@ -156,8 +167,11 @@ func (t *DarwinTransport) Connect(ctx context.Context, arm Arm, result ScanResul
 		write:              write,
 		notify:             notify,
 		micNotify:          micNotify,
+		fileWrite:          fileWrite,
+		fileNotify:         fileNotify,
 		notifications:      make(chan []byte, 32),
 		audioNotifications: make(chan []byte, 64),
+		fileNotifications:  make(chan []byte, 32),
 	}
 	if err := connection.notify.EnableNotifications(connection.deliver); err != nil {
 		return fail(fmt.Errorf("subscribe %s arm notifications: %w", arm, err))
@@ -165,6 +179,12 @@ func (t *DarwinTransport) Connect(ctx context.Context, arm Arm, result ScanResul
 	if connection.micNotify != (bluetooth.DeviceCharacteristic{}) {
 		if err := connection.micNotify.EnableNotifications(connection.deliverAudio); err != nil {
 			connection.micNotify = bluetooth.DeviceCharacteristic{}
+		}
+	}
+	if connection.fileNotify != (bluetooth.DeviceCharacteristic{}) {
+		if err := connection.fileNotify.EnableNotifications(connection.deliverFile); err != nil {
+			connection.fileNotify = bluetooth.DeviceCharacteristic{}
+			connection.fileWrite = bluetooth.DeviceCharacteristic{}
 		}
 	}
 	if err := ctx.Err(); err != nil {
@@ -250,6 +270,50 @@ func (t *DarwinTransport) SubscribeAudio(ctx context.Context, arm Arm) (<-chan [
 	return connection.audioNotifications, nil
 }
 
+func (t *DarwinTransport) WriteFile(ctx context.Context, arm Arm, data []byte) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	connection, err := t.connection(arm)
+	if err != nil {
+		return err
+	}
+	if connection.fileWrite == (bluetooth.DeviceCharacteristic{}) {
+		return fmt.Errorf("%w on %s arm: file write %s", ErrCharacteristicNotFound, arm, fileWriteUUID)
+	}
+	connection.writeMu.Lock()
+	defer connection.writeMu.Unlock()
+	connected, err := connection.device.Connected()
+	if err != nil {
+		return fmt.Errorf("check %s arm connection: %w", arm, err)
+	}
+	if !connected {
+		return fmt.Errorf("%w: %s arm", ErrDisconnected, arm)
+	}
+	written, err := connection.fileWrite.WriteWithoutResponse(data)
+	if err != nil {
+		return fmt.Errorf("write %s arm file data: %w", arm, err)
+	}
+	if written != len(data) {
+		return fmt.Errorf("write %s arm file data: wrote %d of %d bytes", arm, written, len(data))
+	}
+	return nil
+}
+
+func (t *DarwinTransport) SubscribeFile(ctx context.Context, arm Arm) (<-chan []byte, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	connection, err := t.connection(arm)
+	if err != nil {
+		return nil, err
+	}
+	if connection.fileNotify == (bluetooth.DeviceCharacteristic{}) {
+		return nil, fmt.Errorf("%w on %s arm: file notify %s", ErrCharacteristicNotFound, arm, fileNotifyUUID)
+	}
+	return connection.fileNotifications, nil
+}
+
 // Close disconnects both arms and closes their notification streams.
 func (t *DarwinTransport) Close() error {
 	t.mu.Lock()
@@ -304,6 +368,18 @@ func (c *armConnection) deliverAudio(data []byte) {
 	}
 }
 
+func (c *armConnection) deliverFile(data []byte) {
+	c.notifyMu.Lock()
+	defer c.notifyMu.Unlock()
+	if c.closed {
+		return
+	}
+	select {
+	case c.fileNotifications <- append([]byte(nil), data...):
+	default:
+	}
+}
+
 func (c *armConnection) close(disconnect bool) error {
 	var err error
 	c.closeOnce.Do(func() {
@@ -316,6 +392,9 @@ func (c *armConnection) close(disconnect bool) error {
 		close(c.notifications)
 		if c.audioNotifications != nil {
 			close(c.audioNotifications)
+		}
+		if c.fileNotifications != nil {
+			close(c.fileNotifications)
 		}
 	})
 	return err

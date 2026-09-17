@@ -31,6 +31,12 @@ macOS → BLE → G2
   wearing detection, and screen position
 - brightness, automatic brightness, head-up angle, and screen-position controls
 - stock dashboard release plus experimental widget order and Schedule injection
+- custom dashboard MiniApp menu registration and launch routing
+- navigation compass and calibration events
+- EvenAI wake-word, session, ASR, and built-in skill commands
+- IMU control with decoded three-axis reports
+- onboarding, time synchronization, and R1 relay control
+- native notification controls and three-phase Even file transfer
 
 ## Reference
 
@@ -75,6 +81,37 @@ Runtime state and input events use independent subscriptions:
 statuses := client.SubscribeStatus(ctx)
 events := client.SubscribeEvents(ctx)
 ```
+
+`SubscribeEvents` receives the native EvenHub `OS_NOTIFY_EVENT_TO_APP` stream,
+including click, scroll, double-click, foreground, and exit events initiated on
+the glasses. System events also expose `event.Source` so callers can distinguish
+the right temple (`1`), ring (`2`), and left temple (`3`).
+
+Custom MiniApp entries can be published to the glasses dashboard menu and
+handled through the same event stream:
+
+```go
+err := client.SetMenu(ctx, []g2.MenuItem{
+	{PackageName: "com.example.weather", Name: "Weather"},
+})
+if err != nil {
+	return err
+}
+
+for event := range client.SubscribeEvents(ctx) {
+	if event.Kind == protocol.EvenHubEventMenu {
+		fmt.Printf("launch %s (appId=%d)\n", event.PackageName, event.AppID)
+	}
+}
+```
+
+Menu entries are restored automatically after reconnect. The selected app ID is
+also associated with subsequent native page rebuilds.
+
+Additional MentraOS-derived services are exposed through `StartCompass`,
+`SetHeyEven`, `ShowNotificationsPanel`, `SetIMU`, `SyncTime`,
+`SetRingConnection`, `ConfigureNotifications`, `PushNotification`, and
+`TransferFile`. See [the protocol coverage matrix](docs/mentra-g2-protocol-coverage.md).
 
 `Disconnect` releases the current BLE connections while retaining the selected
 device for `Reconnect`. `Close` permanently stops the client session.

@@ -55,6 +55,42 @@ func (c *Client) SubscribeEvents(ctx context.Context) <-chan protocol.EvenHubEve
 	return events
 }
 
+// SubscribeNavigation returns compass and calibration events tied to ctx.
+func (c *Client) SubscribeNavigation(ctx context.Context) <-chan protocol.NavigationEvent {
+	events := make(chan protocol.NavigationEvent, 32)
+	c.subscriberMu.Lock()
+	id := c.nextSubscriberID
+	c.nextSubscriberID++
+	c.navigationSubscribers[id] = events
+	c.subscriberMu.Unlock()
+	go func() {
+		<-ctx.Done()
+		c.subscriberMu.Lock()
+		delete(c.navigationSubscribers, id)
+		close(events)
+		c.subscriberMu.Unlock()
+	}()
+	return events
+}
+
+// SubscribeNotificationResponses returns notification control responses tied to ctx.
+func (c *Client) SubscribeNotificationResponses(ctx context.Context) <-chan protocol.NotificationResponse {
+	events := make(chan protocol.NotificationResponse, 16)
+	c.subscriberMu.Lock()
+	id := c.nextSubscriberID
+	c.nextSubscriberID++
+	c.notificationSubscribers[id] = events
+	c.subscriberMu.Unlock()
+	go func() {
+		<-ctx.Done()
+		c.subscriberMu.Lock()
+		delete(c.notificationSubscribers, id)
+		close(events)
+		c.subscriberMu.Unlock()
+	}()
+	return events
+}
+
 // AttachNotifications routes one arm's notification stream through the client.
 func (c *Client) AttachNotifications(ctx context.Context, arm ble.Arm, notifications <-chan []byte) {
 	ctx, cancel := context.WithCancel(ctx)
@@ -108,6 +144,24 @@ func (c *Client) HandleNotification(arm ble.Arm, data []byte) {
 			payload = body
 		}
 	}
+	if data[6] == protocol.NavigationServiceID {
+		event, parseErr := protocol.ParseNavigationEvent(payload)
+		if parseErr != nil {
+			c.log("[NAVIGATION] ignored event: %v\n", parseErr)
+			return
+		}
+		c.publishNavigation(event)
+		return
+	}
+	if data[6] == protocol.NotificationServiceID {
+		response, parseErr := protocol.ParseNotificationResponse(payload)
+		if parseErr != nil {
+			c.log("[NOTIFICATION] ignored response: %v\n", parseErr)
+			return
+		}
+		c.publishNotificationResponse(response)
+		return
+	}
 	if data[6] == protocol.G2SettingsServiceID {
 		magic, parseErr := protocol.ParseSettingsMagic(payload)
 		if parseErr != nil || magic < 0 {
@@ -127,11 +181,21 @@ func (c *Client) HandleNotification(arm ble.Arm, data []byte) {
 	if data[6] != protocol.EvenHubServiceID {
 		return
 	}
-	if data[7] == 0x01 || data[7] == 0x06 {
-		event, parseErr := protocol.ParseEvenHubEvent(payload)
-		if parseErr != nil || event.Kind == protocol.EvenHubEventOther {
-			c.log("[EVENHUB] ignored event: %v\n", parseErr)
-			return
+	event, eventErr := protocol.ParseEvenHubEvent(payload)
+	if eventErr == nil && event.Kind != protocol.EvenHubEventOther {
+		if event.Kind == protocol.EvenHubEventMenu {
+			c.menuMu.Lock()
+			if event.AppID == c.lastMenuAppID && time.Since(c.lastMenuAt) < 500*time.Millisecond {
+				c.menuMu.Unlock()
+				return
+			}
+			c.lastMenuAppID = event.AppID
+			c.lastMenuAt = time.Now()
+			event.PackageName = c.menuAppIDs[event.AppID]
+			if event.PackageName != "" {
+				c.activeMenuAppID = event.AppID
+			}
+			c.menuMu.Unlock()
 		}
 		if event.Kind == protocol.EvenHubEventSystem && (event.Type == protocol.EvenHubEventForegroundExit || event.Type == protocol.EvenHubEventAbnormalExit || event.Type == protocol.EvenHubEventSystemExit) {
 			c.nativeMu.Lock()
@@ -145,6 +209,9 @@ func (c *Client) HandleNotification(arm ble.Arm, data []byte) {
 		c.publishEvent(event)
 		c.dispatchEvenHubEvent(event)
 		return
+	}
+	if eventErr != nil {
+		c.log("[EVENHUB] event parse failed: %v\n", eventErr)
 	}
 
 	response, parseErr := protocol.ParseEvenHubResponse(payload)
@@ -204,6 +271,28 @@ func (c *Client) publishEvent(event protocol.EvenHubEvent) {
 	for _, events := range c.eventSubscribers {
 		select {
 		case events <- event:
+		default:
+		}
+	}
+}
+
+func (c *Client) publishNavigation(event protocol.NavigationEvent) {
+	c.subscriberMu.Lock()
+	defer c.subscriberMu.Unlock()
+	for _, events := range c.navigationSubscribers {
+		select {
+		case events <- event:
+		default:
+		}
+	}
+}
+
+func (c *Client) publishNotificationResponse(response protocol.NotificationResponse) {
+	c.subscriberMu.Lock()
+	defer c.subscriberMu.Unlock()
+	for _, events := range c.notificationSubscribers {
+		select {
+		case events <- response:
 		default:
 		}
 	}
