@@ -114,3 +114,6 @@ is required at runtime.
 
 Native events use the exported `protocol.EvenHubEvent*` constants. The CLI prints
 readable names such as `click`, `scroll-top`, `scroll-bottom`, and `double-click`.
+
+`list` 支持单击选中项查看完整文字、双击返回列表。选中框按列表容器宽度
+铺满整行（576 像素）。列表参数本身就是详情文字，不会额外读取文件或请求服务。

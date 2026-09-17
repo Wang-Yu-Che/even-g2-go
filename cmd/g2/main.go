@@ -484,6 +484,8 @@ func runNative(args []string, list bool) error {
 		return err
 	}
 	defer client.Close()
+	events := client.SubscribeEvents(ctx)
+	navigation := listNavigation{rows: content}
 	if list {
 		if err := client.DisplayList(ctx, "hud", content); err != nil {
 			return err
@@ -492,7 +494,6 @@ func runNative(args []string, list bool) error {
 		return err
 	}
 	fmt.Println("[NATIVE] displaying; interact with the glasses or press Ctrl-C to stop")
-	events := client.SubscribeEvents(ctx)
 
 	for {
 		select {
@@ -504,6 +505,11 @@ func runNative(args []string, list bool) error {
 			fmt.Printf("[EVENT] kind=%s name=%q item=%q index=%d type=%s(%d) data=%d\n",
 				event.Kind, event.Name, event.ItemName, event.ItemIndex,
 				protocol.EvenHubEventTypeName(event.Type), event.Type, event.EventData)
+			if list {
+				if err := navigation.handle(ctx, client, event, time.Now()); err != nil {
+					return err
+				}
+			}
 		}
 	}
 }

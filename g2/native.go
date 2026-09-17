@@ -87,6 +87,15 @@ func (c *Client) ShowTextWithStyle(ctx context.Context, name, content string, st
 // and bitmap containers. The bitmap is transmitted only when this method is
 // called; later text updates keep using the cheap Cmd=5 path.
 func (c *Client) ShowTextWithIcon(ctx context.Context, name, content string, style TextStyle, icon StatusIcon) error {
+	return c.ShowTextWithIcons(ctx, name, content, style, []StatusIcon{icon})
+}
+
+// ShowTextWithIcons creates a native page with multiple static image
+// containers. The last icon remains available to UpdateStatusIcon.
+func (c *Client) ShowTextWithIcons(ctx context.Context, name, content string, style TextStyle, icons []StatusIcon) error {
+	if len(icons) == 0 {
+		return errors.New("at least one native icon is required")
+	}
 	c.imageMu.Lock()
 	defer c.imageMu.Unlock()
 	c.nativeMu.Lock()
@@ -96,53 +105,61 @@ func (c *Client) ShowTextWithIcon(ctx context.Context, name, content string, sty
 	}
 	c.stopDisplayRefresh()
 	c.stopHeartbeat()
+	defer c.startHeartbeat(ctx)
+	protocolIcons := make([]protocol.EvenHubImage, 0, len(icons))
+	for _, icon := range icons {
+		protocolIcons = append(protocolIcons, protocol.EvenHubImage{ID: icon.ID, Name: icon.Name, X: icon.X, Y: icon.Y, Width: icon.Width, Height: icon.Height, BMP: icon.BMP})
+	}
+	geometry := protocol.EvenHubGeometry{X: style.X, Y: style.Y, Width: style.Width, Height: style.Height}
+	textStyle := protocol.EvenHubTextStyle{BorderWidth: style.BorderWidth, BorderColor: style.BorderColor, BorderRadius: style.BorderRadius, PaddingLength: style.PaddingLength}
+	warmup := false
 	if c.nativeCreated {
 		magic := c.nextEvenHubMagic()
-		if err := c.sendNativeCommand(ctx, protocol.BuildEvenHubShutdown(magic), magic); err != nil {
-			c.startHeartbeat(ctx)
-			return err
-		}
-		c.nativeCreated = false
-	}
-	c.logPacket("TX", ble.Right, protocol.EvenHubPrelude)
-	if err := c.transport.Write(ctx, ble.Right, protocol.EvenHubPrelude); err != nil {
-		c.startHeartbeat(ctx)
-		return err
-	}
-	if err := sleepContext(ctx, c.nativePreludeDelay); err != nil {
-		c.startHeartbeat(ctx)
-		return err
-	}
-	payload, err := protocol.BuildEvenHubCreateTextImage(name, content,
-		protocol.EvenHubGeometry{X: style.X, Y: style.Y, Width: style.Width, Height: style.Height},
-		protocol.EvenHubTextStyle{BorderWidth: style.BorderWidth, BorderColor: style.BorderColor, BorderRadius: style.BorderRadius, PaddingLength: style.PaddingLength},
-		protocol.EvenHubImage{ID: icon.ID, Name: icon.Name, X: icon.X, Y: icon.Y, Width: icon.Width, Height: icon.Height, BMP: icon.BMP}, 201)
-	if err != nil {
-		return err
-	}
-	response, err := c.sendEvenHubAck(ctx, payload, 201, c.evenHubAckTimeout)
-	if err != nil || (response.Result != nil && *response.Result%2 != 0) {
-		c.startHeartbeat(ctx)
+		payload, err := protocol.BuildEvenHubRebuildTextImages(name, content, geometry, textStyle, protocolIcons, magic)
 		if err != nil {
 			return err
 		}
-		return fmt.Errorf("%w: create result=%d", ErrEvenHubRejected, *response.Result)
-	}
-	if err := sleepContext(ctx, c.nativeCreateDelay); err != nil {
-		return err
-	}
-	// Firmware drops the first image burst after CREATE; a small icon fits in one
-	// fragment, so one sacrificial send is enough to warm the container.
-	if err := c.sendNativeIcon(ctx, icon, true); err != nil {
-		return err
+		if err := c.sendNativeCommand(ctx, payload, magic); err != nil {
+			return err
+		}
+	} else {
+		c.logPacket("TX", ble.Right, protocol.EvenHubPrelude)
+		if err := c.transport.Write(ctx, ble.Right, protocol.EvenHubPrelude); err != nil {
+			return err
+		}
+		if err := sleepContext(ctx, c.nativePreludeDelay); err != nil {
+			return err
+		}
+		payload, err := protocol.BuildEvenHubCreateTextImages(name, content, geometry, textStyle, protocolIcons, 201)
+		if err != nil {
+			return err
+		}
+		response, err := c.sendEvenHubAck(ctx, payload, 201, c.evenHubAckTimeout)
+		if err != nil {
+			return err
+		}
+		if response.Result != nil && *response.Result%2 != 0 {
+			return fmt.Errorf("%w: create result=%d", ErrEvenHubRejected, *response.Result)
+		}
+		if err := sleepContext(ctx, c.nativeCreateDelay); err != nil {
+			return err
+		}
+		warmup = true
 	}
 	c.nativeCreated = true
 	c.nativeShape = nativeShapeText
-	c.nativeIconID, c.nativeIconName = icon.ID, icon.Name
+	updateIcon := icons[len(icons)-1]
+	c.nativeIconID, c.nativeIconName = updateIcon.ID, updateIcon.Name
 	c.evenHubMu.Lock()
 	c.evenHubActive = true
 	c.evenHubMu.Unlock()
-	c.startHeartbeat(ctx)
+	// Firmware drops the first image burst only after CREATE. Rebuilds can send
+	// every image once, in order, without a sacrificial transfer.
+	for index, icon := range icons {
+		if err := c.sendNativeIcon(ctx, icon, warmup && index == 0); err != nil {
+			return err
+		}
+	}
 	return nil
 }
 

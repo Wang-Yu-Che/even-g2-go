@@ -105,29 +105,68 @@ func BuildEvenHubCreateImages(tiles []ImageTile, magic int) ([]byte, error) {
 // BuildEvenHubCreateTextImage creates a mixed page containing one text and one
 // image container. The image pixels are sent separately with Cmd=3.
 func BuildEvenHubCreateTextImage(textName, content string, textGeometry EvenHubGeometry, style EvenHubTextStyle, image EvenHubImage, magic int) ([]byte, error) {
-	text, err := evenHubTextObject(1, textName, content, true, textGeometry, style)
+	return BuildEvenHubCreateTextImages(textName, content, textGeometry, style, []EvenHubImage{image}, magic)
+}
+
+// BuildEvenHubCreateTextImages creates one text container and multiple image
+// containers. Callers must send each image's pixels serially after creation.
+func BuildEvenHubCreateTextImages(textName, content string, textGeometry EvenHubGeometry, style EvenHubTextStyle, images []EvenHubImage, magic int) ([]byte, error) {
+	text, imageObjects, err := evenHubTextImageObjects(textName, content, textGeometry, style, images)
 	if err != nil {
 		return nil, err
 	}
-	if err := validateEvenHubName(image.Name); err != nil {
-		return nil, err
-	}
-	if image.ID < 1 || image.Width < 1 || image.Height < 1 {
-		return nil, fmt.Errorf("invalid EvenHub image container: %+v", image)
-	}
-	imageObject := protoUint(1, image.X)
-	imageObject = append(imageObject, protoUint(2, image.Y)...)
-	imageObject = append(imageObject, protoUint(3, image.Width)...)
-	imageObject = append(imageObject, protoUint(4, image.Height)...)
-	imageObject = append(imageObject, protoUint(5, image.ID)...)
-	imageObject = append(imageObject, protoString(6, image.Name)...)
-
-	create := protoUint(1, 2)
+	create := protoUint(1, 1+len(images))
 	create = append(create, protoMessage(3, text)...)
-	create = append(create, protoMessage(4, imageObject)...)
+	for _, imageObject := range imageObjects {
+		create = append(create, protoMessage(4, imageObject)...)
+	}
 	create = append(create, protoUint(5, 10000)...)
 	payload := protoUint(2, magic)
 	return append(payload, protoMessage(3, create)...), nil
+}
+
+// BuildEvenHubRebuildTextImages replaces the active page without emitting a
+// system-exit event. Image pixels are sent separately after the rebuild.
+func BuildEvenHubRebuildTextImages(textName, content string, textGeometry EvenHubGeometry, style EvenHubTextStyle, images []EvenHubImage, magic int) ([]byte, error) {
+	text, imageObjects, err := evenHubTextImageObjects(textName, content, textGeometry, style, images)
+	if err != nil {
+		return nil, err
+	}
+	rebuild := protoUint(1, 1+len(images))
+	rebuild = append(rebuild, protoMessage(3, text)...)
+	for _, imageObject := range imageObjects {
+		rebuild = append(rebuild, protoMessage(4, imageObject)...)
+	}
+	payload := protoUint(1, 7)
+	payload = append(payload, protoUint(2, magic)...)
+	return append(payload, protoMessage(7, rebuild)...), nil
+}
+
+func evenHubTextImageObjects(textName, content string, textGeometry EvenHubGeometry, style EvenHubTextStyle, images []EvenHubImage) ([]byte, [][]byte, error) {
+	text, err := evenHubTextObject(1, textName, content, true, textGeometry, style)
+	if err != nil {
+		return nil, nil, err
+	}
+	if len(images) == 0 || len(images) > 4 {
+		return nil, nil, fmt.Errorf("invalid EvenHub image container count: %d", len(images))
+	}
+	objects := make([][]byte, 0, len(images))
+	for _, image := range images {
+		if err := validateEvenHubName(image.Name); err != nil {
+			return nil, nil, err
+		}
+		if image.ID < 1 || image.Width < 1 || image.Height < 1 {
+			return nil, nil, fmt.Errorf("invalid EvenHub image container: %+v", image)
+		}
+		object := protoUint(1, image.X)
+		object = append(object, protoUint(2, image.Y)...)
+		object = append(object, protoUint(3, image.Width)...)
+		object = append(object, protoUint(4, image.Height)...)
+		object = append(object, protoUint(5, image.ID)...)
+		object = append(object, protoString(6, image.Name)...)
+		objects = append(objects, object)
+	}
+	return text, objects, nil
 }
 
 // BuildEvenHubImageFragment builds one Cmd=3 ImageRawData message.
@@ -159,6 +198,7 @@ func evenHubListObject(id int, name string, rows []string, capture, selectBorder
 		return nil, err
 	}
 	items := protoUint(1, len(rows))
+	items = append(items, protoUint(2, geometry.Width)...)
 	if selectBorder {
 		items = append(items, protoUint(3, 1)...)
 	}

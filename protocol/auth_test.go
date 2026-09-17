@@ -7,7 +7,7 @@ import (
 )
 
 func TestBuildAuthPacketsGolden(t *testing.T) {
-	now := time.Unix(1700000000, 0)
+	now := time.Unix(1700000000, 0).In(time.FixedZone("UTC-6", -6*60*60))
 	want := [][]byte{
 		{0xAA, 0x21, 0x01, 0x0C, 0x01, 0x01, 0x80, 0x00, 0x08, 0x04, 0x10, 0x0C, 0x1A, 0x04, 0x08, 0x01, 0x10, 0x04, 0xC6, 0xBC},
 		{0xAA, 0x21, 0x02, 0x0A, 0x01, 0x01, 0x80, 0x20, 0x08, 0x05, 0x10, 0x0E, 0x22, 0x02, 0x08, 0x02, 0xC2, 0x9E},
@@ -25,6 +25,20 @@ func TestBuildAuthPacketsGolden(t *testing.T) {
 	for index := range want {
 		if !bytes.Equal(got[index], want[index]) {
 			t.Errorf("packet %d = % X, want % X", index+1, got[index], want[index])
+		}
+	}
+}
+
+func TestBuildAuthPacketsUsesLocalUTCOffsetInQuarterHours(t *testing.T) {
+	now := time.Unix(1700000000, 0).In(time.FixedZone("Asia/Shanghai", 8*60*60))
+	packets := BuildAuthPackets(now)
+
+	for _, index := range []int{2, 6} {
+		packet := packets[index]
+		// UTC+8 is +32 quarter-hours. It follows protobuf field 2 (0x10)
+		// inside the nested time-sync message.
+		if !bytes.Contains(packet, []byte{0x10, 0x20}) {
+			t.Fatalf("packet %d does not contain UTC+8 quarter-hour offset: % X", index+1, packet)
 		}
 	}
 }

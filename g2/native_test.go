@@ -1,11 +1,71 @@
 package g2
 
 import (
+	"errors"
 	"testing"
+	"time"
 
 	"github.com/Wang-Yu-Che/even-g2-go/ble"
 	"github.com/Wang-Yu-Che/even-g2-go/protocol"
 )
+
+func TestShowTextWithIconsRebuildsWithoutShutdown(t *testing.T) {
+	transport := &recordingTransport{}
+	client := testClient(transport)
+	client.setState(Ready)
+	client.nativeCreated = true
+	client.nativeShape = nativeShapeText
+	client.evenHubActive = true
+	transport.writeHook = func(arm ble.Arm, frame []byte) {
+		if arm != ble.Right || len(frame) < 14 || frame[6] != protocol.EvenHubServiceID {
+			return
+		}
+		payload := frame[8 : len(frame)-2]
+		if len(payload) > 1 && payload[0] == 0x08 && payload[1] == 0x09 {
+			t.Errorf("ShowTextWithIcons sent shutdown payload: % X", payload)
+		}
+		if len(payload) < 4 || payload[0] != 0x08 || payload[2] != 0x10 {
+			return
+		}
+		magic := payload[3]
+		switch payload[1] {
+		case 0x07:
+			ack := []byte{0x08, 0x08, 0x10, magic, 0x1A, 0x02, 0x08, 0x06}
+			client.HandleNotification(ble.Right, protocol.BuildPacket(1, protocol.EvenHubServiceID, 0, ack))
+		case 0x03:
+			ack := []byte{0x08, 0x04, 0x10, magic, 0x1A, 0x02, 0x08, 0x04}
+			client.HandleNotification(ble.Right, protocol.BuildPacket(1, protocol.EvenHubServiceID, 0, ack))
+		}
+	}
+
+	icons := []StatusIcon{
+		{ID: 2, Name: "terminal", X: 20, Y: 20, Width: 20, Height: 20, BMP: []byte{1}},
+		{ID: 3, Name: "state", X: 516, Y: 20, Width: 20, Height: 20, BMP: []byte{2}},
+	}
+	if err := client.ShowTextWithIcons(t.Context(), "status", "running", TextStyle{Width: 576, Height: 288}, icons); err != nil {
+		t.Fatalf("ShowTextWithIcons() error = %v", err)
+	}
+	if client.nativeIconID != 3 || client.nativeIconName != "state" {
+		t.Fatalf("update icon = %d/%q", client.nativeIconID, client.nativeIconName)
+	}
+}
+
+func TestShowTextWithIconsRestartsHeartbeatAfterFailure(t *testing.T) {
+	transport := &recordingTransport{writeErr: errors.New("write failed")}
+	client := testClient(transport)
+	client.setState(Ready)
+	client.nativeCreated = true
+	client.heartbeatInterval = time.Millisecond
+
+	err := client.ShowTextWithIcons(t.Context(), "status", "running", TextStyle{Width: 576, Height: 288}, []StatusIcon{
+		{ID: 2, Name: "state", Width: 20, Height: 20, BMP: []byte{1}},
+	})
+	if err == nil {
+		t.Fatal("ShowTextWithIcons() succeeded despite transport failure")
+	}
+	waitForClosed(t, transport)
+	client.stopHeartbeat()
+}
 
 func TestShowTextPrimesAndRebuildsNativePage(t *testing.T) {
 	transport := &recordingTransport{}
