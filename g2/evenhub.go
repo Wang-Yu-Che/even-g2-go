@@ -192,9 +192,6 @@ func (c *Client) HandleNotification(arm ble.Arm, data []byte) {
 			c.lastMenuAppID = event.AppID
 			c.lastMenuAt = time.Now()
 			event.PackageName = c.menuAppIDs[event.AppID]
-			if event.PackageName != "" {
-				c.activeMenuAppID = event.AppID
-			}
 			c.menuMu.Unlock()
 		}
 		if event.Kind == protocol.EvenHubEventSystem && (event.Type == protocol.EvenHubEventForegroundExit || event.Type == protocol.EvenHubEventAbnormalExit || event.Type == protocol.EvenHubEventSystemExit) {

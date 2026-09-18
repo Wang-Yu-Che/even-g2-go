@@ -105,8 +105,8 @@ for event := range client.SubscribeEvents(ctx) {
 }
 ```
 
-Menu entries are restored automatically after reconnect. The selected app ID is
-also associated with subsequent native page rebuilds.
+Menu entries are restored automatically after reconnect. The glasses establish
+the selected MiniApp context before delivering the launch event.
 
 Additional MentraOS-derived services are exposed through `StartCompass`,
 `SetHeyEven`, `ShowNotificationsPanel`, `SetIMU`, `SyncTime`,

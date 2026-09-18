@@ -35,23 +35,72 @@ const (
 
 // DisplayList shows a full-lens native tappable list.
 func (c *Client) DisplayList(ctx context.Context, name string, rows []string) error {
+	return c.DisplayListWithStyle(ctx, name, rows, TextStyle{Width: 576, Height: 288})
+}
+
+// DisplayListWithStyle shows a positioned native tappable list with a border and padding.
+func (c *Client) DisplayListWithStyle(ctx context.Context, name string, rows []string, style TextStyle) error {
 	c.nativeMu.Lock()
 	defer c.nativeMu.Unlock()
+	if !c.nativeCreated {
+		return c.createListLocked(ctx, name, rows, style)
+	}
 	if err := c.prepareNative(ctx); err != nil {
 		return err
 	}
 	magic := c.nextEvenHubMagic()
-	payload, err := protocol.BuildEvenHubRebuildList(name, rows, magic)
+	payload, err := protocol.BuildEvenHubRebuildStyledList(name, rows, magic,
+		protocol.EvenHubGeometry{X: style.X, Y: style.Y, Width: style.Width, Height: style.Height},
+		protocol.EvenHubTextStyle{BorderWidth: style.BorderWidth, BorderColor: style.BorderColor, BorderRadius: style.BorderRadius, PaddingLength: style.PaddingLength})
 	if err != nil {
 		return err
 	}
-	payload = c.associateActiveMenuApp(payload)
 	if err := c.sendNativeCommand(ctx, payload, magic); err != nil {
 		return err
 	}
 	c.nativeShape = nativeShapeList
 	c.startHeartbeat(ctx)
 	return nil
+}
+
+// createListLocked creates the requested list as the MiniApp's startup page.
+// A dashboard menu launch has no active page to rebuild: creating an unrelated
+// placeholder first leaves the firmware associating that page with the default
+// app and it can silently ignore the following app-associated rebuild.
+func (c *Client) createListLocked(ctx context.Context, name string, rows []string, style TextStyle) error {
+	if c.Left.State() != Ready || c.Right.State() != Ready {
+		return ble.ErrDisconnected
+	}
+	c.stopDisplayRefresh()
+	c.stopHeartbeat()
+	defer c.startHeartbeat(ctx)
+
+	c.logPacket("TX", ble.Right, protocol.EvenHubPrelude)
+	if err := c.transport.Write(ctx, ble.Right, protocol.EvenHubPrelude); err != nil {
+		return err
+	}
+	if err := sleepContext(ctx, c.nativePreludeDelay); err != nil {
+		return err
+	}
+	payload, err := protocol.BuildEvenHubCreateStyledList(name, rows, 201,
+		protocol.EvenHubGeometry{X: style.X, Y: style.Y, Width: style.Width, Height: style.Height},
+		protocol.EvenHubTextStyle{BorderWidth: style.BorderWidth, BorderColor: style.BorderColor, BorderRadius: style.BorderRadius, PaddingLength: style.PaddingLength})
+	if err != nil {
+		return err
+	}
+	response, err := c.sendEvenHubAck(ctx, payload, 201, c.evenHubAckTimeout)
+	if err != nil {
+		return err
+	}
+	if response.Result != nil && *response.Result%2 != 0 {
+		return fmt.Errorf("%w: create result=%d", ErrEvenHubRejected, *response.Result)
+	}
+	c.nativeCreated = true
+	c.nativeShape = nativeShapeList
+	c.evenHubMu.Lock()
+	c.evenHubActive = true
+	c.evenHubMu.Unlock()
+	return sleepContext(ctx, c.nativeCreateDelay)
 }
 
 // ShowText switches the full-lens native container to text.
@@ -76,7 +125,6 @@ func (c *Client) ShowTextWithStyle(ctx context.Context, name, content string, st
 	if err != nil {
 		return err
 	}
-	payload = c.associateActiveMenuApp(payload)
 	if err := c.sendNativeCommand(ctx, payload, magic); err != nil {
 		return err
 	}
@@ -121,7 +169,6 @@ func (c *Client) ShowTextWithIcons(ctx context.Context, name, content string, st
 		if err != nil {
 			return err
 		}
-		payload = c.associateActiveMenuApp(payload)
 		if err := c.sendNativeCommand(ctx, payload, magic); err != nil {
 			return err
 		}
@@ -264,7 +311,6 @@ func (c *Client) showTextPrepared(ctx context.Context, name, content string) err
 	if err != nil {
 		return err
 	}
-	payload = c.associateActiveMenuApp(payload)
 	if err := c.sendNativeCommand(ctx, payload, magic); err != nil {
 		return err
 	}

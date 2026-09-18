@@ -51,10 +51,3 @@ func (c *Client) restoreMenu(ctx context.Context) error {
 func (c *Client) sendMenu(ctx context.Context, payload []byte) error {
 	return c.sendService(ctx, protocol.MenuServiceID, payload, ble.Right)
 }
-
-func (c *Client) associateActiveMenuApp(payload []byte) []byte {
-	c.menuMu.RLock()
-	appID := c.activeMenuAppID
-	c.menuMu.RUnlock()
-	return protocol.AssociateEvenHubApp(payload, appID)
-}

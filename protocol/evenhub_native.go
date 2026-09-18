@@ -24,7 +24,11 @@ type EvenHubImage struct {
 var EvenHubFullLens = EvenHubGeometry{Width: 576, Height: 288}
 
 func BuildEvenHubCreateList(name string, rows []string, magic int) ([]byte, error) {
-	object, err := evenHubListObject(1, name, rows, true, true, EvenHubFullLens)
+	return BuildEvenHubCreateStyledList(name, rows, magic, EvenHubFullLens, EvenHubTextStyle{})
+}
+
+func BuildEvenHubCreateStyledList(name string, rows []string, magic int, geometry EvenHubGeometry, style EvenHubTextStyle) ([]byte, error) {
+	object, err := evenHubListObject(1, name, rows, true, true, geometry, style)
 	if err != nil {
 		return nil, err
 	}
@@ -36,7 +40,11 @@ func BuildEvenHubCreateList(name string, rows []string, magic int) ([]byte, erro
 }
 
 func BuildEvenHubRebuildList(name string, rows []string, magic int) ([]byte, error) {
-	object, err := evenHubListObject(1, name, rows, true, true, EvenHubFullLens)
+	return BuildEvenHubRebuildStyledList(name, rows, magic, EvenHubFullLens, EvenHubTextStyle{})
+}
+
+func BuildEvenHubRebuildStyledList(name string, rows []string, magic int, geometry EvenHubGeometry, style EvenHubTextStyle) ([]byte, error) {
+	object, err := evenHubListObject(1, name, rows, true, true, geometry, style)
 	if err != nil {
 		return nil, err
 	}
@@ -193,12 +201,19 @@ func BuildEvenHubShutdown(magic int) []byte {
 	return append(payload, protoMessage(11, nil)...)
 }
 
-func evenHubListObject(id int, name string, rows []string, capture, selectBorder bool, geometry EvenHubGeometry) ([]byte, error) {
+func evenHubListObject(id int, name string, rows []string, capture, selectBorder bool, geometry EvenHubGeometry, style EvenHubTextStyle) ([]byte, error) {
 	if err := validateEvenHubName(name); err != nil {
 		return nil, err
 	}
+	if err := validateEvenHubStyle(style); err != nil {
+		return nil, err
+	}
+	itemWidth := geometry.Width - 2*(style.BorderWidth+style.PaddingLength)
+	if itemWidth <= 0 {
+		return nil, fmt.Errorf("invalid EvenHub list inner width: %d", itemWidth)
+	}
 	items := protoUint(1, len(rows))
-	items = append(items, protoUint(2, geometry.Width)...)
+	items = append(items, protoUint(2, itemWidth)...)
 	if selectBorder {
 		items = append(items, protoUint(3, 1)...)
 	}
@@ -209,6 +224,10 @@ func evenHubListObject(id int, name string, rows []string, capture, selectBorder
 		items = append(items, protoString(4, row)...)
 	}
 	object := evenHubGeometryFields(geometry)
+	object = append(object, protoUint(5, style.BorderWidth)...)
+	object = append(object, protoUint(6, style.BorderColor)...)
+	object = append(object, protoUint(7, style.BorderRadius)...)
+	object = append(object, protoUint(8, style.PaddingLength)...)
 	object = append(object, protoUint(9, id)...)
 	object = append(object, protoString(10, name)...)
 	object = append(object, protoMessage(11, items)...)
@@ -222,9 +241,8 @@ func evenHubTextObject(id int, name, content string, capture bool, geometry Even
 	if err := validateEvenHubName(name); err != nil {
 		return nil, err
 	}
-	if style.BorderWidth < 0 || style.BorderWidth > 5 || style.BorderColor < 0 || style.BorderColor > 15 ||
-		style.BorderRadius < 0 || style.BorderRadius > 10 || style.PaddingLength < 0 || style.PaddingLength > 32 {
-		return nil, fmt.Errorf("invalid EvenHub text style: %+v", style)
+	if err := validateEvenHubStyle(style); err != nil {
+		return nil, err
 	}
 	object := evenHubGeometryFields(geometry)
 	object = append(object, protoUint(5, style.BorderWidth)...)
@@ -238,6 +256,14 @@ func evenHubTextObject(id int, name, content string, capture bool, geometry Even
 	}
 	object = append(object, protoString(12, content)...)
 	return object, nil
+}
+
+func validateEvenHubStyle(style EvenHubTextStyle) error {
+	if style.BorderWidth < 0 || style.BorderWidth > 5 || style.BorderColor < 0 || style.BorderColor > 15 ||
+		style.BorderRadius < 0 || style.BorderRadius > 10 || style.PaddingLength < 0 || style.PaddingLength > 32 {
+		return fmt.Errorf("invalid EvenHub container style: %+v", style)
+	}
+	return nil
 }
 
 func evenHubGeometryFields(geometry EvenHubGeometry) []byte {

@@ -85,15 +85,6 @@ func BuildMenuInfo(magic int, items []MenuItem) ([]byte, map[int]string, error) 
 	return payload, appIDs, nil
 }
 
-// AssociateEvenHubApp associates a page command with a dashboard menu app ID.
-func AssociateEvenHubApp(payload []byte, appID int) []byte {
-	if appID == 0 {
-		return payload
-	}
-	result := append([]byte(nil), payload...)
-	return append(result, protoUint(5, appID)...)
-}
-
 func truncateRunes(value string, limit int) string {
 	runes := []rune(value)
 	if len(runes) <= limit {

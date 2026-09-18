@@ -1,6 +1,7 @@
 package g2
 
 import (
+	"bytes"
 	"errors"
 	"testing"
 	"time"
@@ -89,6 +90,36 @@ func TestShowTextPrimesAndRebuildsNativePage(t *testing.T) {
 		t.Fatalf("writes = %#v", writes)
 	}
 	if client.nativeShape != nativeShapeText || !client.nativeCreated {
+		t.Fatalf("native state = shape %d, created %v", client.nativeShape, client.nativeCreated)
+	}
+}
+
+func TestDisplayListCreatesMenuStartupPageDirectly(t *testing.T) {
+	transport := &recordingTransport{}
+	client := testClient(transport)
+	client.setState(Ready)
+
+	go func() {
+		waitForWrites(t, transport, 2)
+		client.HandleNotification(ble.Right, protocol.BuildPacket(1, protocol.EvenHubServiceID, protocol.EvenHubRequest,
+			[]byte{0x08, 0x01, 0x10, 0xC9, 0x01, 0x1A, 0x00}))
+		waitForWrites(t, transport, 3)
+		client.HandleNotification(ble.Right, protocol.BuildPacket(2, protocol.EvenHubServiceID, protocol.EvenHubRequest,
+			[]byte{0x08, 0x08, 0x10, 0x01, 0x1A, 0x02, 0x08, 0x06}))
+	}()
+
+	if err := client.DisplayList(t.Context(), "sessions", []string{"one", "two"}); err != nil {
+		t.Fatalf("DisplayList() error = %v", err)
+	}
+	writes := transport.writesSnapshot()
+	if len(writes) != 2 {
+		t.Fatalf("writes = %d, want prelude + direct create", len(writes))
+	}
+	payload := writes[1].data[8 : len(writes[1].data)-2]
+	if !bytes.Contains(payload, []byte("sessions")) || bytes.HasSuffix(payload, []byte{0x28, 0xFD, 0x50}) {
+		t.Fatalf("startup payload = % X", payload)
+	}
+	if client.nativeShape != nativeShapeList || !client.nativeCreated {
 		t.Fatalf("native state = shape %d, created %v", client.nativeShape, client.nativeCreated)
 	}
 }

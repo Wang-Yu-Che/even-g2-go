@@ -73,20 +73,19 @@ type Client struct {
 	nativeCreateDelay  time.Duration
 	evenHubAckTimeout  time.Duration
 
-	eventHandlerMu  sync.Mutex
-	eventHandlers   map[uint64]EventHandler
-	nextHandlerID   uint64
-	lastTapAt       time.Time
-	lastBackAt      time.Time
-	menuMu          sync.RWMutex
-	menuItems       []protocol.MenuItem
-	menuAppIDs      map[int]string
-	activeMenuAppID int
-	lastMenuAppID   int
-	lastMenuAt      time.Time
-	settingsMu      sync.RWMutex
-	settings        DeviceSettings
-	settingsKnown   atomic.Bool
+	eventHandlerMu sync.Mutex
+	eventHandlers  map[uint64]EventHandler
+	nextHandlerID  uint64
+	lastTapAt      time.Time
+	lastBackAt     time.Time
+	menuMu         sync.RWMutex
+	menuItems      []protocol.MenuItem
+	menuAppIDs     map[int]string
+	lastMenuAppID  int
+	lastMenuAt     time.Time
+	settingsMu     sync.RWMutex
+	settings       DeviceSettings
+	settingsKnown  atomic.Bool
 
 	imageMu          sync.Mutex
 	imagePrimed      bool

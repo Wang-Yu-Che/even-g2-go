@@ -39,12 +39,3 @@ func TestBuildMenuInfoCapsThirdPartyItems(t *testing.T) {
 		t.Fatalf("third-party item count = %d, want %d", len(appIDs), MenuMaxItems-1)
 	}
 }
-
-func TestAssociateEvenHubApp(t *testing.T) {
-	payload := []byte{0x08, 0x07}
-	got := AssociateEvenHubApp(payload, 10029)
-	want := []byte{0x08, 0x07, 0x28, 0xAD, 0x4E}
-	if !bytes.Equal(got, want) {
-		t.Fatalf("associated payload = % X, want % X", got, want)
-	}
-}
